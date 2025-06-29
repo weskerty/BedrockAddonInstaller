@@ -20,5 +20,3 @@ Simplemente esta para quien suba a Github sus packs.
 ## [WaterDog Update](https://github.com/weskerty/WaterdogPEUpdater)
 Por si usas WaterDogPM y quieras tenerlo Actualizado Siempre.
 
-### Uso Bedrock Server en ArchLinux gracias a este Paquete:
-
