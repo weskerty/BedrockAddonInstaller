@@ -10,7 +10,7 @@ MinecraftPath="/opt/minecraft-bedrock-server"
 AddOnsPath="Descargas/AddOns"
 ```
 
-## [AddonManager.sh](https://github.com/weskerty/BedrockAddonInstaller/blob/master/BedrockAddonManager.sh)
+## [AddonManager.sh 🩹 ](https://github.com/weskerty/BedrockAddonInstaller/blob/master/BedrockAddonManager.sh) 
 ![image](https://github.com/user-attachments/assets/c15e2d55-278b-4e5d-b70c-026fa331b33b)
 
 > [!CAUTION]
