@@ -1,4 +1,5 @@
 # Linux. SH 
+Para Servidor Linux. ([Uso Bedrock Server en ArchLinux gracias a este Paquete](https://aur.archlinux.org/packages/minecraft-bedrock-server))
 Probado en Windows con MINGW pero falla.
 
 ## Instalador
@@ -20,4 +21,4 @@ Simplemente esta para quien suba a Github sus packs.
 Por si usas WaterDogPM y quieras tenerlo Actualizado Siempre.
 
 ### Uso Bedrock Server en ArchLinux gracias a este Paquete:
-https://aur.archlinux.org/packages/minecraft-bedrock-server
+
