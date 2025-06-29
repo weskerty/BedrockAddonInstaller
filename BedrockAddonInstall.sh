@@ -5,7 +5,7 @@
 MinecraftPath="/opt/minecraft-bedrock-server" 
 
 # Ubicacion de los nuevos AddOns. Donde guardas los .mcpack .mcaddon 
-AddOnsPath="/root/Descargas/AddOns"
+AddOnsPath="Descargas/AddOns"
 
 # 
 UUID="True"
@@ -53,8 +53,14 @@ log "${BLUE}=== Minecraft AddOn Updater ===${NC}"
 log "${BLUE}MinecraftPath: $MinecraftPath${NC}"
 log "${BLUE}AddOnsPath: $AddOnsPath${NC}"
 
-
-if [[ ! -d "$MinecraftPath" ]]; then
+# Obtener permisos y propietario del directorio de Minecraft
+if [[ -d "$MinecraftPath" ]]; then
+    minecraft_owner=$(stat -c "%U" "$MinecraftPath")
+    minecraft_group=$(stat -c "%G" "$MinecraftPath")
+    minecraft_perms=$(stat -c "%a" "$MinecraftPath")
+    log "${BLUE}Minecraft directory owner: $minecraft_owner:$minecraft_group${NC}"
+    log "${BLUE}Minecraft directory permissions: $minecraft_perms${NC}"
+else
     log "${RED}Error: MinecraftPath no existe: $MinecraftPath${NC}"
     exit 1
 fi
@@ -63,6 +69,16 @@ if [[ ! -d "$AddOnsPath" ]]; then
     log "${RED}Error: AddOnsPath no existe: $AddOnsPath${NC}"
     exit 1
 fi
+
+
+apply_permissions() {
+    local target_path="$1"
+    if [[ -e "$target_path" ]]; then
+        chown -R "$minecraft_owner:$minecraft_group" "$target_path"
+        chmod -R "$minecraft_perms" "$target_path"
+        log "${GREEN}Permisos aplicados a: $target_path${NC}"
+    fi
+}
 
 cd "$AddOnsPath" || exit 1
 
@@ -187,23 +203,26 @@ for mcpack in *.mcpack; do
         # Generar nombre de carpeta (primeras 11 letras)
         folder_name="${name:0:11}"
         
-        # Verificar si es actualización
+        # Verificar si es actualizacion
         if [[ -n "${existing_uuids[$uuid]}" ]]; then
-            # Es actualización
+            # Es actualizacion
             dest_dir="${existing_uuids[$uuid]}"
             log "${YELLOW}Actualizando pack existente: $(basename "$dest_dir")${NC}"
             rm -rf "$dest_dir"
             ((updated_count++))
         else
-            # Es instalación nueva
+            # Es instalacion nueva
             dest_dir="$base_dest_dir/$folder_name"
             log "${GREEN}Instalando nuevo pack: $folder_name${NC}"
             ((installed_count++))
         fi
         
-        # Mover archivos extraídos al destino
+        # Mover archivos extraidos al destino
         mkdir -p "$(dirname "$dest_dir")"
         mv "$temp_dir" "$dest_dir"
+        
+        # Aplicar permisos y propietario
+        apply_permissions "$dest_dir"
         
         # Eliminar .mcpack procesado
         rm "$mcpack"
@@ -218,7 +237,7 @@ done
 
 # Resumen final
 log "${YELLOW}=== Resumen Final ===${NC}"
-log "${GREEN}Archivos .mcaddon extraídos: $mcaddon_count${NC}"
+log "${GREEN}Archivos .mcaddon extraidos: $mcaddon_count${NC}"
 log "${GREEN}Archivos .mcpack procesados: $mcpack_count${NC}"
 log "${GREEN}Packs nuevos instalados: $installed_count${NC}"
 log "${GREEN}Packs actualizados: $updated_count${NC}"
