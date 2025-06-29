@@ -2,7 +2,7 @@
 Probado en Windows con MINGW pero falla.
 
 ## Instalador
-Ajuste el Script para la ubicacion de Minecraft y donde se econtraran los addons descargados.
+Ajuste el Script para la ubicacion de Minecraft y donde se econtraran los addons descargados. Luego Ejecute el Script.
 
 ```
 MinecraftPath="/opt/minecraft-bedrock-server" 
