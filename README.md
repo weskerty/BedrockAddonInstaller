@@ -13,22 +13,23 @@ AddOnsPath="Descargas/AddOns"
 ![AddOnInstaller](https://github.com/user-attachments/assets/b48eb104-8e16-43f8-8fa4-1285d37dc2cf)
 
 > [!IMPORTANT]
-> Need ``jq`` and ``unzip``
+> Need ``jq`` ``unzip`` `git` `sed`
 
 In Arch Linux:
 ```
-sudo pacman -S jq unzip
+sudo pacman -S git jq sed unzip
 
 ```
 In Debian/Ubuntu 
 ```
-sudo apt install jq unzip -y
+sudo apt install git jq unzip sed -y
 
 ```
 In Windows: 
 ```
 winget install jq -e --scope machine --source winget
 winget install git -e --scope machine --source winget
+winget install sed -e --scope machine --source winget
 
 ```
 > [!IMPORTANT]
