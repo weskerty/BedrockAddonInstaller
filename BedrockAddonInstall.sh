@@ -10,39 +10,68 @@ AddOnsPath="D:\Usuarios\mr\Descargas\AddOns"
 #Nombre de la Carpeta de Mundos
 WorldsFolder="minecraftWorlds"
 
+#Por si Falle la Deteccion de Versiones
+CHECK_VERSIONS=true
 
 
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-###############################################################
+A1="=== Minecraft AddOn Installer/Updater ==="
+A2="System:"
+A3="MinecraftPath:"
+A4="AddOnsPath:"
+A5="TempDir:"
+A6="Error: Missing dependencies:"
+A7="Install missing dependencies from package manager"
+A8="Error: MinecraftPath does not exist:"
+A9="Error: AddOnsPath does not exist:"
+A10="=== Mapping existing UUIDs ==="
+A11="# Pack Registry -"
+A12="# TYPE|UUID|NAME|FOLDER|PATH"
+A13="# Unidentified Packs -"
+A14="# TYPE|FOLDER|REASON|PATH"
+A15="BP Missing manifest:"
+A16="BP Missing UUID:"
+A17="RP Missing manifest:"
+A18="RP Missing UUID:"
+A19="Behavior Packs:"
+A20="Resource Packs:"
+A21="Unidentified packs: BP="
+A22="Details saved to:"
+A23="=== Extracting compressed files ==="
+A24="Extracted:"
+A25="Error extracting:"
+A26="Extracted - MCAddons:"
+A27="MCPacks:"
+A28="Zips:"
+A29="=== Extracting nested files ==="
+A30="Nested extraction completed in"
+A31="rounds"
+A32="FAILED: No UUID in"
+A33="FAILED: Error copying pack:"
+A34="FAILED: Copy error for"
+A35="=== Processing addon packs ==="
+A36="No manifest.json files found"
+A37="=== PACK SUMMARY ==="
+A38="Processed:"
+A39="BP - Installed:"
+A40="Updated:"
+A41="RP - Installed:"
+A42="Failed:"
+A43="=== Processing .mcworld files ==="
+A44="World installed:"
+A45="Error moving world:"
+A46="Error extracting world:"
+A47="Worlds processed:"
+A48="=== Process completed ==="
+A49="Log:"
+A50="INSTALL:"
+A51="UPDATE:"
+A52="SKIP: Lower version"
+A53="Version check:"
+A54="current"
+A55="new"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -53,10 +82,12 @@ NC='\033[0m'
 LOG_FILE=""
 TEMP_DIR=""
 declare -g -A existing_uuids
+declare -g -A existing_versions
 
 declare -g bp_detected=0 bp_folders=0 rp_detected=0 rp_folders=0
 declare -g mcpacks_extracted=0 mcaddons_extracted=0 zips_extracted=0
 declare -g bp_installed=0 bp_updated=0 rp_installed=0 rp_updated=0
+declare -g bp_skipped=0 rp_skipped=0
 
 detect_os() {
     [[ "$OSTYPE" == "msys" || "$OSTYPE" == "cygwin" || "$OSTYPE" == "win32" ]] && echo "windows" || echo "linux"
@@ -86,8 +117,8 @@ check_dependencies() {
     command -v unzip &> /dev/null || missing_deps+=("unzip")
     
     if [[ ${#missing_deps[@]} -gt 0 ]]; then
-        log "${RED}Error: Missing dependencies: ${missing_deps[*]}${NC}"
-        log "${YELLOW}Install missing dependencies from package manager${NC}"
+        log "${RED}$A6 ${missing_deps[*]}${NC}"
+        log "${YELLOW}$A7${NC}"
         exit 1
     fi
 }
@@ -95,6 +126,9 @@ check_dependencies() {
 cleanup_temp() {
     [[ -d "$TEMP_DIR" ]] && rm -rf "$TEMP_DIR" 2>/dev/null
 }
+
+
+###################################
 
 clean_json_in_memory() {
     local json_file="$1"
@@ -132,7 +166,6 @@ clean_json_in_memory() {
             }
             
             if (!in_string && char == "/" && i < length(line) && substr(line, i+1, 1) == "/") {
-                # Found comment outside string, ignore rest of line
                 break
             }
             
@@ -173,7 +206,6 @@ clean_json_in_memory() {
             }
             
             if (!in_string && char == "/" && i < length(content) && substr(content, i+1, 1) == "*") {
-                # Found start of multi-line comment, skip until */
                 i += 2
                 while (i <= length(content)) {
                     if (substr(content, i, 1) == "*" && i < length(content) && substr(content, i+1, 1) == "/") {
@@ -192,8 +224,6 @@ clean_json_in_memory() {
         content = result
         
         gsub(/,[ \t\n\r]*([}\]])/, "\\1", content)
-        
-        # Remove empty lines and normalize whitespace
         gsub(/\r/, "", content)
         gsub(/\t/, "    ", content)
         gsub(/\n[ \t]*\n/, "\n", content)
@@ -202,6 +232,8 @@ clean_json_in_memory() {
     }
     ' "$json_file"
 }
+
+#######################################
 
 read_json_value() {
     local json_file="$1"
@@ -221,6 +253,53 @@ read_json_value() {
     [[ "$value" == "null" || "$value" == "" ]] && return 1
     
     echo "$value"
+}
+
+
+#############
+
+parse_version() {
+    local version_array="$1"
+    
+    if [[ "$version_array" == "null" || "$version_array" == "" ]]; then
+        echo "0.0.0"
+        return
+    fi
+    
+    local major=$(echo "$version_array" | jq -r '.[0] // 0' 2>/dev/null)
+    local minor=$(echo "$version_array" | jq -r '.[1] // 0' 2>/dev/null)
+    local patch=$(echo "$version_array" | jq -r '.[2] // 0' 2>/dev/null)
+    
+    echo "${major}.${minor}.${patch}"
+}
+
+compare_versions() {
+    local v1="$1"
+    local v2="$2"
+    
+    local v1_major=$(echo "$v1" | cut -d. -f1)
+    local v1_minor=$(echo "$v1" | cut -d. -f2)
+    local v1_patch=$(echo "$v1" | cut -d. -f3)
+    
+    local v2_major=$(echo "$v2" | cut -d. -f1)
+    local v2_minor=$(echo "$v2" | cut -d. -f2)
+    local v2_patch=$(echo "$v2" | cut -d. -f3)
+    
+    if [[ $v1_major -gt $v2_major ]]; then
+        echo 1
+    elif [[ $v1_major -lt $v2_major ]]; then
+        echo -1
+    elif [[ $v1_minor -gt $v2_minor ]]; then
+        echo 1
+    elif [[ $v1_minor -lt $v2_minor ]]; then
+        echo -1
+    elif [[ $v1_patch -gt $v2_patch ]]; then
+        echo 1
+    elif [[ $v1_patch -lt $v2_patch ]]; then
+        echo -1
+    else
+        echo 0
+    fi
 }
 
 generate_folder_name() {
@@ -256,14 +335,14 @@ initialize() {
     
     echo "$(date '+%Y-%m-%d %H:%M:%S') - Minecraft AddOn Installer/Updater Started ($os_type)" > "$LOG_FILE"
     
-    log "${BLUE}=== Minecraft AddOn Installer/Updater ===${NC}"
-    log "${BLUE}System: $os_type | MinecraftPath: $MinecraftPath${NC}"
-    log "${BLUE}AddOnsPath: $AddOnsPath | TempDir: $TEMP_DIR${NC}"
+    log "${BLUE}$A1${NC}"
+    log "${BLUE}$A2 $os_type | $A3 $MinecraftPath${NC}"
+    log "${BLUE}$A4 $AddOnsPath | $A5 $TEMP_DIR${NC}"
     
     check_dependencies
     
-    [[ ! -d "$MinecraftPath" ]] && { log "${RED}Error: MinecraftPath does not exist: $MinecraftPath${NC}"; exit 1; }
-    [[ ! -d "$AddOnsPath" ]] && { log "${RED}Error: AddOnsPath does not exist: $AddOnsPath${NC}"; exit 1; }
+    [[ ! -d "$MinecraftPath" ]] && { log "${RED}$A8 $MinecraftPath${NC}"; exit 1; }
+    [[ ! -d "$AddOnsPath" ]] && { log "${RED}$A9 $AddOnsPath${NC}"; exit 1; }
     
     [[ -d "$TEMP_DIR" ]] && rm -rf "$TEMP_DIR"
     mkdir -p "$TEMP_DIR"
@@ -278,19 +357,19 @@ initialize() {
 }
 
 map_existing_uuids() {
-    log "${YELLOW}=== Mapping existing UUIDs ===${NC}"
+    log "${YELLOW}$A10${NC}"
     
     local registry_file="$AddOnsPath/installed_packs_registry.txt"
     local unidentified_file="$AddOnsPath/unidentified_packs.txt"
     
     {
-        echo "# Pack Registry - $(date '+%Y-%m-%d %H:%M:%S')"
-        echo "# TYPE|UUID|NAME|FOLDER|PATH"
+        echo "# $A11 $(date '+%Y-%m-%d %H:%M:%S')"
+        echo "# $A12"
     } > "$registry_file"
     
     {
-        echo "# Unidentified Packs - $(date '+%Y-%m-%d %H:%M:%S')"
-        echo "# TYPE|FOLDER|REASON|PATH"
+        echo "# $A13 $(date '+%Y-%m-%d %H:%M:%S')"
+        echo "# $A14"
     } > "$unidentified_file"
     
     if [[ -d "$MinecraftPath/behavior_packs" ]]; then
@@ -302,7 +381,7 @@ map_existing_uuids() {
             
             if [[ ${#manifests[@]} -eq 0 ]]; then
                 echo "BP|$(basename "$pack_dir")|NO_MANIFEST|$pack_dir" >> "$unidentified_file"
-                log "${YELLOW}BP Missing manifest: $(basename "$pack_dir")${NC}"
+                log "${YELLOW}$A15 $(basename "$pack_dir")${NC}"
                 continue
             fi
             
@@ -310,11 +389,14 @@ map_existing_uuids() {
             for manifest in "${manifests[@]}"; do
                 local uuid=$(read_json_value "$manifest" '.header.uuid')
                 local name=$(read_json_value "$manifest" '.header.name')
+                local version_array=$(read_json_value "$manifest" '.header.version')
+                local version=$(parse_version "$version_array")
                 
                 if [[ -n "$uuid" ]]; then
                     existing_uuids["$uuid"]="$(dirname "$manifest")"
+                    existing_versions["$uuid"]="$version"
                     local short_name=$(generate_folder_name "$name")
-                    echo "BP|$uuid|$short_name|$(basename "$pack_dir")|$(dirname "$manifest")" >> "$registry_file"
+                    echo "BP|$uuid|$short_name|$(basename "$pack_dir")|$(dirname "$manifest")|$version" >> "$registry_file"
                     ((bp_detected++))
                     found_valid=true
                     break
@@ -323,7 +405,7 @@ map_existing_uuids() {
             
             if [[ "$found_valid" == false ]]; then
                 echo "BP|$(basename "$pack_dir")|NO_UUID|$pack_dir" >> "$unidentified_file"
-                log "${YELLOW}BP Missing UUID: $(basename "$pack_dir")${NC}"
+                log "${YELLOW}$A16 $(basename "$pack_dir")${NC}"
             fi
         done
     fi
@@ -337,7 +419,7 @@ map_existing_uuids() {
             
             if [[ ${#manifests[@]} -eq 0 ]]; then
                 echo "RP|$(basename "$pack_dir")|NO_MANIFEST|$pack_dir" >> "$unidentified_file"
-                log "${YELLOW}RP Missing manifest: $(basename "$pack_dir")${NC}"
+                log "${YELLOW}$A17 $(basename "$pack_dir")${NC}"
                 continue
             fi
             
@@ -345,11 +427,14 @@ map_existing_uuids() {
             for manifest in "${manifests[@]}"; do
                 local uuid=$(read_json_value "$manifest" '.header.uuid')
                 local name=$(read_json_value "$manifest" '.header.name')
+                local version_array=$(read_json_value "$manifest" '.header.version')
+                local version=$(parse_version "$version_array")
                 
                 if [[ -n "$uuid" ]]; then
                     existing_uuids["$uuid"]="$(dirname "$manifest")"
+                    existing_versions["$uuid"]="$version"
                     local short_name=$(generate_folder_name "$name")
-                    echo "RP|$uuid|$short_name|$(basename "$pack_dir")|$(dirname "$manifest")" >> "$registry_file"
+                    echo "RP|$uuid|$short_name|$(basename "$pack_dir")|$(dirname "$manifest")|$version" >> "$registry_file"
                     ((rp_detected++))
                     found_valid=true
                     break
@@ -358,24 +443,24 @@ map_existing_uuids() {
             
             if [[ "$found_valid" == false ]]; then
                 echo "RP|$(basename "$pack_dir")|NO_UUID|$pack_dir" >> "$unidentified_file"
-                log "${YELLOW}RP Missing UUID: $(basename "$pack_dir")${NC}"
+                log "${YELLOW}$A18 $(basename "$pack_dir")${NC}"
             fi
         done
     fi
     
-    log "${GREEN}Behavior Packs: $bp_detected/$bp_folders | Resource Packs: $rp_detected/$rp_folders${NC}"
+    log "${GREEN}$A19 $bp_detected/$bp_folders | $A20 $rp_detected/$rp_folders${NC}"
     
     local bp_missing=$((bp_folders - bp_detected))
     local rp_missing=$((rp_folders - rp_detected))
     
     if [[ $bp_missing -gt 0 || $rp_missing -gt 0 ]]; then
-        log "${YELLOW}Unidentified packs: BP=$bp_missing, RP=$rp_missing${NC}"
-        log "${YELLOW}Details saved to: $(basename "$unidentified_file")${NC}"
+        log "${YELLOW}$A21$bp_missing, RP=$rp_missing${NC}"
+        log "${YELLOW}$A22 $(basename "$unidentified_file")${NC}"
     fi
 }
 
 extract_all_compressed() {
-    log "${YELLOW}=== Extracting compressed files ===${NC}"
+    log "${YELLOW}$A23${NC}"
     
     cd "$AddOnsPath" || exit 1
     
@@ -389,7 +474,7 @@ extract_all_compressed() {
         mkdir -p "$extract_dir"
         
         if unzip -q "$file" -d "$extract_dir" 2>/dev/null; then
-            log "${GREEN}Extracted: $(basename "$file")${NC}"
+            log "${GREEN}$A24 $(basename "$file")${NC}"
             rm "$file"
             
             case "$extension" in
@@ -398,16 +483,16 @@ extract_all_compressed() {
                 "zip") ((zips_extracted++)) ;;
             esac
         else
-            log "${RED}Error extracting: $(basename "$file")${NC}"
+            log "${RED}$A25 $(basename "$file")${NC}"
             rmdir "$extract_dir" 2>/dev/null
         fi
     done
     
-    log "${GREEN}Extracted - MCAddons: $mcaddons_extracted | MCPacks: $mcpacks_extracted | Zips: $zips_extracted${NC}"
+    log "${GREEN}$A26 $mcaddons_extracted | $A27 $mcpacks_extracted | $A28 $zips_extracted${NC}"
 }
 
 extract_nested_compressed() {
-    log "${YELLOW}=== Extracting nested files ===${NC}"
+    log "${YELLOW}$A29${NC}"
     
     local rounds=0
     local max_rounds=5
@@ -434,7 +519,7 @@ extract_nested_compressed() {
         [[ "$found_compressed" == false ]] && break
     done
     
-    log "${GREEN}Nested extraction completed in $rounds rounds${NC}"
+    log "${GREEN}$A30 $rounds $A31${NC}"
 }
 
 process_single_pack() {
@@ -444,9 +529,11 @@ process_single_pack() {
     local uuid=$(read_json_value "$manifest_file" '.header.uuid')
     local name=$(read_json_value "$manifest_file" '.header.name')
     local is_resource=$(read_json_value "$manifest_file" '.modules[]? | select(.type == "resources") | .type')
+    local version_array=$(read_json_value "$manifest_file" '.header.version')
+    local new_version=$(parse_version "$version_array")
     
     if [[ -z "$uuid" ]]; then
-        log "${RED}FAILED: No UUID in $(basename "$manifest_file")${NC}"
+        log "${RED}$A32 $(basename "$manifest_file")${NC}"
         echo "FAILED|NO_UUID|$(basename "$pack_root")|$pack_root" >> "$AddOnsPath/installation_failures.txt"
         return 1
     fi
@@ -463,12 +550,31 @@ process_single_pack() {
     fi
     
     local folder_name=$(generate_folder_name "$name")
-    local dest_dir action
+    local dest_dir action should_install=true
     
     if [[ -n "${existing_uuids[$uuid]}" ]]; then
         dest_dir="${existing_uuids[$uuid]}"
         action="UPDATE"
-        rm -rf "$dest_dir"
+        
+        if [[ "$CHECK_VERSIONS" == "true" ]]; then
+            local current_version="${existing_versions[$uuid]}"
+            local version_comparison=$(compare_versions "$new_version" "$current_version")
+            
+            log "${BLUE}$A53 $A54 $current_version -> $A55 $new_version${NC}"
+            
+            if [[ $version_comparison -lt 0 ]]; then
+                log "${YELLOW}$A52 $name ($new_version < $current_version)${NC}"
+                should_install=false
+                
+                if [[ "$pack_type" == "BP" ]]; then
+                    ((bp_skipped++))
+                else
+                    ((rp_skipped++))
+                fi
+            fi
+        fi
+        
+        [[ "$should_install" == "true" ]] && rm -rf "$dest_dir"
     else
         dest_dir="$base_dest_dir/$folder_name"
         
@@ -482,12 +588,16 @@ process_single_pack() {
         action="INSTALL"
     fi
     
+    if [[ "$should_install" == "false" ]]; then
+        return 0
+    fi
+    
     mkdir -p "$(dirname "$dest_dir")"
     
     if cp -r "$pack_root" "$dest_dir"; then
         apply_permissions "$dest_dir"
         
-        log "${GREEN}$action: $(basename "$dest_dir") ($pack_type) - $name${NC}"
+        log "${GREEN}$A50 $(basename "$dest_dir") ($pack_type) - $name [$new_version]${NC}" 
         
         if [[ "$pack_type" == "BP" ]]; then
             [[ "$action" == "INSTALL" ]] && ((bp_installed++)) || ((bp_updated++))
@@ -497,14 +607,14 @@ process_single_pack() {
         
         return 0
     else
-        log "${RED}FAILED: Error copying pack: $name${NC}"
+        log "${RED}$A33 $name${NC}"
         echo "FAILED|COPY_ERROR|$(basename "$pack_root")|$pack_root|$dest_dir" >> "$AddOnsPath/installation_failures.txt"
         return 1
     fi
 }
 
 process_all_packs() {
-    log "${YELLOW}=== Processing addon packs ===${NC}"
+    log "${YELLOW}$A35${NC}"
     
     local processed_count=0 failed_count=0
     local manifests_found=()
@@ -516,7 +626,7 @@ process_all_packs() {
     local total_count=${#manifests_found[@]}
     
     if [[ $total_count -eq 0 ]]; then
-        log "${YELLOW}No manifest.json files found${NC}"
+        log "${YELLOW}$A36${NC}"
         return
     fi
     
@@ -528,15 +638,20 @@ process_all_packs() {
         fi
     done
     
-    log "${GREEN}=== PACK SUMMARY ===${NC}"
-    log "${GREEN}Processed: $processed_count/$total_count${NC}"
-    log "${GREEN}BP - Installed: $bp_installed | Updated: $bp_updated${NC}"
-    log "${GREEN}RP - Installed: $rp_installed | Updated: $rp_updated${NC}"
-    [[ $failed_count -gt 0 ]] && log "${RED}Failed: $failed_count${NC}"
+    log "${GREEN}$A37${NC}"
+    log "${GREEN}$A38 $processed_count/$total_count${NC}"
+    log "${GREEN}$A39 $bp_installed | $A40 $bp_updated${NC}"
+    log "${GREEN}$A41 $rp_installed | $A40 $rp_updated${NC}"
+    
+    if [[ $bp_skipped -gt 0 || $rp_skipped -gt 0 ]]; then
+        log "${YELLOW}Skipped: BP=$bp_skipped | RP=$rp_skipped${NC}"
+    fi
+    
+    [[ $failed_count -gt 0 ]] && log "${RED}$A42 $failed_count${NC}"
 }
 
 extract_mcworld_files() {
-    log "${YELLOW}=== Processing .mcworld files ===${NC}"
+    log "${YELLOW}$A43${NC}"
     
     cd "$AddOnsPath" || exit 1
     
@@ -572,19 +687,19 @@ extract_mcworld_files() {
                 apply_permissions "$dest_dir"
                 rm "$mcworld"
                 
-                log "${GREEN}World installed: $(basename "$dest_dir") - $world_name${NC}"
+                log "${GREEN}$A44 $(basename "$dest_dir") - $world_name${NC}"
                 ((mcworld_count++))
             else
-                log "${RED}Error moving world: $(basename "$mcworld")${NC}"
+                log "${RED}$A45 $(basename "$mcworld")${NC}"
                 rm -rf "$temp_world_dir"
             fi
         else
-            log "${RED}Error extracting world: $(basename "$mcworld")${NC}"
+            log "${RED}$A46 $(basename "$mcworld")${NC}"
             rm -rf "$temp_world_dir"
         fi
     done
     
-    log "${GREEN}Worlds processed: $mcworld_count${NC}"
+    log "${GREEN}$A47 $mcworld_count${NC}"
 }
 
 main() {
@@ -595,8 +710,8 @@ main() {
     process_all_packs
     extract_mcworld_files
     
-    log "${BLUE}=== Process completed ===${NC}"
-    log "${BLUE}Log: $(basename "$LOG_FILE")${NC}"
+    log "${BLUE}$A48${NC}"
+    log "${BLUE}$A49 $(basename "$LOG_FILE")${NC}"
 }
 
 main "$@"
