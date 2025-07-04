@@ -13,27 +13,28 @@ AddOnsPath="Descargas/AddOns"
 ![AddOnInstaller](https://github.com/user-attachments/assets/b48eb104-8e16-43f8-8fa4-1285d37dc2cf)
 
 > [!IMPORTANT]
-> Need ``jq`` ``unzip`` `git` `sed`
+> Need `jq` `unzip` `awk`
 
 In Arch Linux:
 ```
-sudo pacman -S git jq sed unzip
+sudo pacman -S git jq gawk unzip
 
 ```
 In Debian/Ubuntu 
 ```
-sudo apt install git jq unzip sed -y
+sudo apt install git jq unzip gawk -y
 
 ```
 In Windows: 
 ```
 winget install jq -e --scope machine --source winget
 winget install git -e --scope machine --source winget
-winget install sed -e --scope machine --source winget
 
 ```
 > [!IMPORTANT]
-> Windows Need MinGW to Run .sh. Open Git Bash and Run Here.
+> Windows Open Git Bash and Run Here.
+> The script does not check versions, if you add a minor plugin to the one already installed it will install it on top of it
+> Manifest.json files that have non-functional characters with .json are not detected, Example: comments.
 
 
 ## [AddonManager.sh 🩹 ](https://github.com/weskerty/BedrockAddonInstaller/blob/master/BedrockAddonManager.sh) 
