@@ -33,7 +33,9 @@ winget install git -e --scope machine --source winget
 ```
 > [!IMPORTANT]
 > Windows Open Git Bash and Run Here.
+> 
 > The script does not check versions, if you add a minor plugin to the one already installed it will install it on top of it
+> 
 > Manifest.json files that have non-functional characters with .json are not detected, Example: comments.
 
 
