@@ -46,10 +46,12 @@ git clone https://github.com/weskerty/BedrockAddonInstaller.git && cd BedrockAdd
 
 > [!CAUTION]
 > This script is incomplete. Using it will disable resources. 
-  
-
-## [WaterDog Update](https://github.com/weskerty/WaterdogPEUpdater)
-  You use WaterDogPM and want to keep it updated.
 
 
+# Utils
+
+## [WaterDog Proxy Updater](https://github.com/weskerty/WaterdogPEUpdater)
+  You use WaterDogPM and want to keep it updated. https://waterdog.dev/
+
+## [Server Version and E-ARM](https://github.com/itzg/docker-minecraft-bedrock-server)
 
