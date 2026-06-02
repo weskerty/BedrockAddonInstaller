@@ -1,14 +1,18 @@
 #!/usr/bin/env node
+
+// ============================================================
+const MC_ROOT = '/opt/minecraft-bedrock-server';
+const DL_DIR  = '/root/Downloads/minecraft';
+// ============================================================
+
 const blessed = require('blessed');
 const AdmZip  = require('adm-zip');
 const fs      = require('fs');
 const path    = require('path');
 
-const MC_ROOT    = '/opt/minecraft-bedrock-server';
 const BP_DIR     = path.join(MC_ROOT, 'behavior_packs');
 const RP_DIR     = path.join(MC_ROOT, 'resource_packs');
 const WORLDS_DIR = path.join(MC_ROOT, 'worlds');
-const DL_DIR     = '/root/Downloads/minecraft';
 const TEMP_DIR   = '/tmp/mc_addon_install';
 
 const screen = blessed.screen({ smartCSR: true, title: 'MC Addon Manager' });
