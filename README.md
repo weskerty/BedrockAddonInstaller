@@ -55,3 +55,12 @@ git clone https://github.com/weskerty/BedrockAddonInstaller.git && cd BedrockAdd
 
 ## [Server Version and E-ARM](https://github.com/itzg/docker-minecraft-bedrock-server)
 
+# Server
+## [Arch Linux](https://aur.archlinux.org/packages/minecraft-bedrock-server)
+
+```
+yay -S minecraft-bedrock-server
+
+```
+
+## [Ubuntu](https://github.com/TheRemote/MinecraftBedrockServer)
