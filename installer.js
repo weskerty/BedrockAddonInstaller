@@ -1,26 +1,30 @@
 #!/usr/bin/env node
 
 // ============================================================
-const MC_ROOT = '/opt/minecraft-bedrock-server';
-const DL_DIR  = '/root/Downloads/minecraft';
+let MC_ROOT = '/opt/minecraft-bedrock-server';
+let DL_DIR  = '/root/Downloads/minecraft';  // .mcpack .mcaddon .zip
+// DL_DIR/resources/ carpetas descomprimidas
 // ============================================================
 
 const blessed = require('blessed');
 const AdmZip  = require('adm-zip');
 const fs      = require('fs');
 const path    = require('path');
+const { spawnSync } = require('child_process');
 
-const BP_DIR     = path.join(MC_ROOT, 'behavior_packs');
-const RP_DIR     = path.join(MC_ROOT, 'resource_packs');
-const WORLDS_DIR = path.join(MC_ROOT, 'worlds');
-const TEMP_DIR   = '/tmp/mc_addon_install';
+const TEMP_DIR = '/tmp/mc_addon_install';
 
 const screen = blessed.screen({ smartCSR: true, title: 'MC Addon Manager' });
 
 let worldName   = null;
 let worldBPJson = null;
 let worldRPJson = null;
-let mainBox     = null;
+
+const getDirs = () => ({
+  BP:     path.join(MC_ROOT, 'behavior_packs'),
+  RP:     path.join(MC_ROOT, 'resource_packs'),
+  WORLDS: path.join(MC_ROOT, 'worlds'),
+});
 
 function readJson(p) {
   try { return JSON.parse(fs.readFileSync(p, 'utf8')); }
@@ -31,9 +35,58 @@ function writeJson(p, data) {
   fs.writeFileSync(p, JSON.stringify(data, null, '\t'));
 }
 
-function parseVer(arr) {
-  if (!Array.isArray(arr)) return '0.0.0';
-  return arr.join('.');
+
+function dirSize(dir) {
+  let bytes = 0;
+  const walk = (d) => {
+    try {
+      for (const f of fs.readdirSync(d)) {
+        const full = path.join(d, f);
+        try {
+          const st = fs.statSync(full);
+          if (st.isDirectory()) walk(full);
+          else bytes += st.size;
+        } catch {}
+      }
+    } catch {}
+  };
+  walk(dir);
+  if (bytes < 1024)        return bytes + ' B';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+  return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+}
+
+function parseVer(v) {
+  if (Array.isArray(v)) return v.join('.');
+  if (typeof v === 'string') return v;
+  return '0.0.0';
+}
+
+
+function stripCodes(s) {
+  return (s || '').replace(/§./g, '').trim();
+}
+
+
+function parseManifestInfo(m) {
+  const h   = m.header || {};
+  const name = stripCodes(h.name);
+  const desc = stripCodes(h.description);
+  const ver  = parseVer(h.version);
+  const minEng = parseVer(h.min_engine_version);
+  const authors = (m.metadata?.authors || []).join(', ');
+  const caps = (m.capabilities || []).join(', ');
+  const subpacks = (m.subpacks || []).map(s => s.name ? stripCodes(s.name) : s.folder_name);
+
+  const depPacks   = [];  
+  const depModules = []; 
+  for (const d of (m.dependencies || [])) {
+    if (d.module_name) depModules.push(d.module_name + ' ' + parseVer(d.version));
+    else if (d.uuid)   depPacks.push(d.uuid + ' v' + parseVer(d.version));
+  }
+
+  return { name, desc, ver, minEng, authors, caps, subpacks, depPacks, depModules,
+           uuid: h.uuid, formatVersion: m.format_version };
 }
 
 function detectPackType(manifest) {
@@ -52,24 +105,31 @@ function cmpVer(a, b) {
   return 0;
 }
 
-function scanPackDir(dir) {
+function isNativePack(packDir, m) {
+  if (!fs.existsSync(path.join(packDir, 'pack_icon.png'))) return true;
+  const ver = m.header.version || [];
+  if (ver[0] === 0 && ver[1] === 0 && ver[2] === 1) return true;
+  if ((m.header.name || '').includes('@minecraft')) return true;
+  return false;
+}
+
+function scanPackDir(dir, hideNative) {
   const packs = {};
   if (!fs.existsSync(dir)) return packs;
   for (const folder of fs.readdirSync(dir)) {
-    const mp = path.join(dir, folder, 'manifest.json');
+    const packDir = path.join(dir, folder);
+    const mp = path.join(packDir, 'manifest.json');
     if (!fs.existsSync(mp)) continue;
     const m = readJson(mp);
     if (!m?.header?.uuid) continue;
+    if (hideNative && isNativePack(packDir, m)) continue;
     const uuid = m.header.uuid;
-    const ver  = parseVer(m.header.version);
-    const name = (m.header.name && !m.header.name.startsWith('pack.')) ? m.header.name : folder;
+    const info = parseManifestInfo(m);
+    const ver  = info.ver;
+    const name = (info.name && !m.header.name?.startsWith('pack.')) ? info.name : folder;
     if (packs[uuid] && cmpVer(ver, packs[uuid].version) <= 0) continue;
-    packs[uuid] = {
-      uuid, name, version: ver,
-      type:  detectPackType(m),
-      deps:  (m.dependencies || []).map(d => d.uuid).filter(Boolean),
-      folder, dir,
-    };
+    packs[uuid] = { uuid, name, desc: info.desc, version: ver, type: detectPackType(m),
+      deps: (m.dependencies || []).map(d => d.uuid).filter(Boolean), folder, dir, manifest: m };
   }
   return packs;
 }
@@ -77,50 +137,41 @@ function scanPackDir(dir) {
 function buildAddonGroups(bpPacks, rpPacks) {
   const groups = {};
   const addToGroup = (key, pack) => {
-    if (!groups[key]) groups[key] = { name: pack.name, bp: null, rp: null };
+    if (!groups[key]) groups[key] = { name: pack.name, desc: pack.desc, bp: null, rp: null };
     if (pack.type === 'BP') groups[key].bp = pack;
     else groups[key].rp = pack;
   };
-
   const linked = new Set();
   for (const [uuid, pack] of Object.entries(bpPacks)) {
     const rpDep = pack.deps.find(d => rpPacks[d]);
     if (rpDep) {
-      linked.add(uuid);
-      linked.add(rpDep);
-      addToGroup(uuid, pack);
-      addToGroup(uuid, rpPacks[rpDep]);
+      linked.add(uuid); linked.add(rpDep);
+      addToGroup(uuid, pack); addToGroup(uuid, rpPacks[rpDep]);
     }
   }
   for (const [uuid, pack] of Object.entries(rpPacks)) {
     const bpDep = pack.deps.find(d => bpPacks[d]);
     if (bpDep && !linked.has(uuid)) {
-      linked.add(uuid);
-      linked.add(bpDep);
-      addToGroup(bpDep, bpPacks[bpDep]);
-      addToGroup(bpDep, pack);
+      linked.add(uuid); linked.add(bpDep);
+      addToGroup(bpDep, bpPacks[bpDep]); addToGroup(bpDep, pack);
     }
   }
-  for (const [uuid, pack] of Object.entries(bpPacks)) {
-    if (!linked.has(uuid)) { addToGroup('bp_' + uuid, pack); }
-  }
-  for (const [uuid, pack] of Object.entries(rpPacks)) {
-    if (!linked.has(uuid)) { addToGroup('rp_' + uuid, pack); }
-  }
-
+  for (const [uuid, pack] of Object.entries(bpPacks))
+    if (!linked.has(uuid)) addToGroup('bp_' + uuid, pack);
+  for (const [uuid, pack] of Object.entries(rpPacks))
+    if (!linked.has(uuid)) addToGroup('rp_' + uuid, pack);
   return groups;
 }
 
 function isActive(uuid) {
-  const inBP = (worldBPJson || []).some(e => e.pack_id === uuid);
-  const inRP = (worldRPJson || []).some(e => e.pack_id === uuid);
-  return inBP || inRP;
+  return (worldBPJson || []).some(e => e.pack_id === uuid) ||
+         (worldRPJson || []).some(e => e.pack_id === uuid);
 }
 
 function activateGroup(group) {
-  const bpPath = path.join(WORLDS_DIR, worldName, 'world_behavior_packs.json');
-  const rpPath = path.join(WORLDS_DIR, worldName, 'world_resource_packs.json');
-
+  const { WORLDS } = getDirs();
+  const bpPath = path.join(WORLDS, worldName, 'world_behavior_packs.json');
+  const rpPath = path.join(WORLDS, worldName, 'world_resource_packs.json');
   if (group.bp) {
     worldBPJson = worldBPJson || [];
     if (!worldBPJson.some(e => e.pack_id === group.bp.uuid)) {
@@ -138,9 +189,9 @@ function activateGroup(group) {
 }
 
 function deactivateGroup(group) {
-  const bpPath = path.join(WORLDS_DIR, worldName, 'world_behavior_packs.json');
-  const rpPath = path.join(WORLDS_DIR, worldName, 'world_resource_packs.json');
-
+  const { WORLDS } = getDirs();
+  const bpPath = path.join(WORLDS, worldName, 'world_behavior_packs.json');
+  const rpPath = path.join(WORLDS, worldName, 'world_resource_packs.json');
   if (group.bp && worldBPJson) {
     worldBPJson = worldBPJson.filter(e => e.pack_id !== group.bp.uuid);
     writeJson(bpPath, worldBPJson);
@@ -151,12 +202,57 @@ function deactivateGroup(group) {
   }
 }
 
+function deleteGroup(group) {
+  const { BP, RP } = getDirs();
+  if (group.bp) { const p = path.join(BP, group.bp.folder); if (fs.existsSync(p)) fs.rmSync(p, { recursive: true }); }
+  if (group.rp) { const p = path.join(RP, group.rp.folder); if (fs.existsSync(p)) fs.rmSync(p, { recursive: true }); }
+}
+
+function getMCOwner() {
+  const stat = fs.statSync(MC_ROOT);
+  return { uid: stat.uid, gid: stat.gid };
+}
+
+function checkOwnership(installedPaths) {
+  const { uid, gid } = getMCOwner();
+  return installedPaths.some(p => {
+    if (!fs.existsSync(p)) return false;
+    const s = fs.statSync(p);
+    return s.uid !== uid || s.gid !== gid;
+  });
+}
+
+function fixOwnership(installedPaths) {
+  const { uid, gid } = getMCOwner();
+  screen.program.disableMouse();
+  screen.program.showCursor();
+  screen.program.normalBuffer();
+  process.stdout.write('\n');
+  for (const p of installedPaths) {
+    if (!fs.existsSync(p)) continue;
+    const result = spawnSync('sudo', ['chown', '-R', `${uid}:${gid}`, p], { stdio: 'inherit' });
+    if (result.status !== 0) process.stdout.write('Error chown: ' + p + '\n');
+  }
+  screen.program.enableMouse();
+  screen.program.hideCursor();
+  screen.program.alternateBuffer();
+  screen.alloc();
+  screen.render();
+}
+
+function statusBox(content) {
+  return blessed.box({
+    top: 'center', left: 'center', width: 60, height: 3,
+    content, tags: true,
+    style: { bg: 'black', fg: 'yellow' },
+  });
+}
+
 function extractToTemp(file) {
   const base = path.basename(file).replace(/\.[^.]+$/, '');
   const dest = path.join(TEMP_DIR, base);
   fs.mkdirSync(dest, { recursive: true });
-  const zip = new AdmZip(file);
-  zip.extractAllTo(dest, true);
+  new AdmZip(file).extractAllTo(dest, true);
   return dest;
 }
 
@@ -166,8 +262,7 @@ function findManifests(dir) {
     if (depth > 4) return;
     for (const entry of fs.readdirSync(d)) {
       const full = path.join(d, entry);
-      const stat = fs.statSync(full);
-      if (stat.isDirectory()) walk(full, depth + 1);
+      if (fs.statSync(full).isDirectory()) walk(full, depth + 1);
       else if (entry === 'manifest.json') results.push(full);
     }
   };
@@ -175,7 +270,7 @@ function findManifests(dir) {
   return results;
 }
 
-function extractNested(dir) {
+function extractNested(dir, onFile) {
   let found = true;
   while (found) {
     found = false;
@@ -185,6 +280,7 @@ function extractNested(dir) {
         if (fs.statSync(full).isDirectory()) { walk(full); continue; }
         if (/\.(mcpack|mcaddon|zip)$/.test(entry)) {
           found = true;
+          if (onFile) onFile(entry);
           const dest = path.join(d, path.basename(entry).replace(/\.[^.]+$/, ''));
           fs.mkdirSync(dest, { recursive: true });
           try { new AdmZip(full).extractAllTo(dest, true); } catch {}
@@ -197,167 +293,390 @@ function extractNested(dir) {
 }
 
 function scanDownloads() {
-  if (!fs.existsSync(DL_DIR)) return [];
-  return fs.readdirSync(DL_DIR)
-    .filter(f => /\.(mcpack|mcaddon|zip)$/.test(f))
-    .map(f => path.join(DL_DIR, f));
+  const entries = [];
+  if (!fs.existsSync(DL_DIR)) return entries;
+  for (const f of fs.readdirSync(DL_DIR))
+    if (/\.(mcpack|mcaddon|zip)$/.test(f))
+      entries.push({ full: path.join(DL_DIR, f), isDir: false });
+  const resDir = path.join(DL_DIR, 'resources');
+  if (fs.existsSync(resDir))
+    for (const f of fs.readdirSync(resDir)) {
+      const full = path.join(resDir, f);
+      if (fs.statSync(full).isDirectory()) entries.push({ full, isDir: true });
+    }
+  return entries;
 }
 
-function buildInstallPreview(bpPacks, rpPacks) {
-  const files = scanDownloads();
-  if (files.length === 0) return { items: [], files: [] };
-
+function buildInstallPreview(bpPacks, rpPacks, onStatus) {
+  const { BP, RP } = getDirs();
+  const entries = scanDownloads();
+  if (entries.length === 0) return { items: [], files: [] };
   if (fs.existsSync(TEMP_DIR)) fs.rmSync(TEMP_DIR, { recursive: true });
   fs.mkdirSync(TEMP_DIR, { recursive: true });
-
   const preview = [];
-  for (const file of files) {
+  const sourceFiles = [];
+  for (const entry of entries) {
     try {
-      const dest = extractToTemp(file);
-      extractNested(dest);
-      const manifests = findManifests(dest);
-      for (const mp of manifests) {
+      let scanDir;
+      if (entry.isDir) {
+        if (onStatus) onStatus('Escaneando: ' + path.basename(entry.full));
+        scanDir = entry.full;
+      } else {
+        if (onStatus) onStatus('Extrayendo: ' + path.basename(entry.full));
+        scanDir = extractToTemp(entry.full);
+        extractNested(scanDir, (f) => onStatus && onStatus('Extrayendo: ' + f));
+      }
+      for (const mp of findManifests(scanDir)) {
         const m = readJson(mp);
         if (!m?.header?.uuid) continue;
         const type    = detectPackType(m);
         const uuid    = m.header.uuid;
         const rawName = m.header.name || '';
-        const name    = (rawName && !rawName.startsWith('pack.')) ? rawName : path.basename(path.dirname(mp));
+        const name    = stripCodes((rawName && !rawName.startsWith('pack.')) ? rawName : path.basename(path.dirname(mp)));
         const newVer  = parseVer(m.header.version);
         const existing = type === 'BP' ? bpPacks[uuid] : rpPacks[uuid];
-        preview.push({
-          file: path.basename(file),
-          name, uuid, type, newVer,
+        const downgrade = existing ? cmpVer(newVer, existing.version) < 0 : false;
+        preview.push({ file: path.basename(entry.full), name, uuid, type, newVer, isDir: entry.isDir, downgrade,
           existing: existing ? { name: existing.name, version: existing.version, folder: existing.folder } : null,
-          packRoot: path.dirname(mp),
-        });
+          packRoot: path.dirname(mp) });
       }
+      sourceFiles.push(entry);
     } catch {}
   }
-  return { items: preview, files };
+  return { items: preview, files: sourceFiles };
 }
 
-function doInstall(preview, sourceFiles) {
+function doInstall(preview, sourceFiles, onStatus) {
+  const { BP, RP } = getDirs();
+  const installed = [];
   for (const p of preview) {
-    const destBase = p.type === 'BP' ? BP_DIR : RP_DIR;
+    if (p.downgrade) continue;
+    const destBase = p.type === 'BP' ? BP : RP;
     const existingFolder = p.existing?.folder;
-    const isLiteralName = existingFolder && /^pack[._]/.test(existingFolder);
-    const folderName = (!existingFolder || isLiteralName)
-      ? p.name.replace(/[^a-zA-Z0-9_\- []]/g, '_')
-      : existingFolder;
+    const folderName = existingFolder
+      ? existingFolder
+      : p.name.replace(/[^a-zA-Z0-9_\- \[\]]/g, '_');
     const dest = path.join(destBase, folderName);
+    if (onStatus) onStatus('Instalando: ' + p.name + ' [' + p.type + ']');
     if (fs.existsSync(dest)) fs.rmSync(dest, { recursive: true });
     fs.cpSync(p.packRoot, dest, { recursive: true });
+    installed.push(dest);
   }
   if (fs.existsSync(TEMP_DIR)) fs.rmSync(TEMP_DIR, { recursive: true });
-
   const doneDir = path.join(DL_DIR, 'Instalados');
   fs.mkdirSync(doneDir, { recursive: true });
-  for (const f of sourceFiles) {
-    const dest = path.join(doneDir, path.basename(f));
+  const moved = new Set();
+  for (const entry of sourceFiles) {
+    if (moved.has(entry.full)) continue;
+    moved.add(entry.full);
+    const dest = path.join(doneDir, path.basename(entry.full));
     try {
-      if (fs.existsSync(dest)) fs.unlinkSync(dest);
-      fs.renameSync(f, dest);
+      if (fs.existsSync(dest)) { entry.isDir ? fs.rmSync(dest, { recursive: true }) : fs.unlinkSync(dest); }
+      fs.renameSync(entry.full, dest);
     } catch {}
   }
+  return installed;
 }
 
-function showWorldScreen() {
+function showConfirmModal(msg, onYes, onNo) {
+  const box = blessed.box({
+    top: 'center', left: 'center', width: 64, height: 7,
+    border: { type: 'line' }, tags: true,
+    content: '\n ' + msg + '\n\n {cyan-fg}[S]{/} Si   {cyan-fg}[N]{/} No',
+    style: { border: { fg: 'yellow' }, fg: 'white', bg: 'black' },
+  });
+  screen.append(box);
+  screen.render();
+  const cleanup = () => { box.detach(); screen.render(); };
+  screen.removeAllListeners('keypress');
+  screen.key(['s', 'S'], () => { cleanup(); onYes(); });
+  screen.key(['n', 'N', 'escape'], () => { cleanup(); onNo(); });
+}
+
+function showFilePicker(title, startPath, onSelect, onCancel) {
   screen.children.slice().forEach(c => c.detach());
+  screen.removeAllListeners('keypress');
 
-  const bpPacks = scanPackDir(BP_DIR);
-  const rpPacks = scanPackDir(RP_DIR);
-  const groups  = buildAddonGroups(bpPacks, rpPacks);
-
-  const bpPath = path.join(WORLDS_DIR, worldName, 'world_behavior_packs.json');
-  const rpPath = path.join(WORLDS_DIR, worldName, 'world_resource_packs.json');
-  worldBPJson  = readJson(bpPath) || [];
-  worldRPJson  = readJson(rpPath) || [];
+  let currentPath = startPath;
 
   const header = blessed.box({
-    top: 0, left: 0, width: '100%', height: 3,
-    content: ` MC Addon Manager — World: {bold}${worldName}{/bold}  |  {cyan-fg}Enter{/cyan-fg} toggle  {cyan-fg}I{/cyan-fg} install  {cyan-fg}Q{/cyan-fg} quit`,
-    tags: true,
+    top: 0, left: 0, width: '100%', height: 3, tags: true,
+    content: ' ' + title + '  |  {cyan-fg}k/j{/} arriba/abajo  {cyan-fg}l{/} entrar  {cyan-fg}h{/} atras  {cyan-fg}Enter{/} confirmar aqui  {cyan-fg}Esc{/} cancelar',
     style: { bg: 'black', fg: 'white' },
   });
 
-  const list = blessed.list({
-    top: 3, left: 0, width: '100%', height: '100%-3',
-    keys: true, vi: true, mouse: true,
+  const breadcrumb = blessed.box({
+    top: 3, left: 0, width: '100%', height: 1,
     tags: true,
+    style: { bg: 'blue', fg: 'white' },
+  });
+
+  const list = blessed.list({
+    top: 4, left: 0, width: '100%', height: '100%-4',
+    keys: true, vi: true, mouse: true, tags: true,
     scrollable: true, scrollbar: { ch: '|' },
-    style: {
-      selected: { bg: 'blue', fg: 'white' },
-      item: { fg: 'white' },
-    },
+    style: { selected: { bg: 'blue', fg: 'white' }, item: { fg: 'white' } },
   });
 
-  const entries = Object.entries(groups);
-
-  const buildItems = () => entries.map(([, g]) => {
-    const active = (g.bp && isActive(g.bp.uuid)) || (g.rp && isActive(g.rp.uuid));
-    const tags   = [g.bp ? 'BP' : null, g.rp ? 'RP' : null].filter(Boolean).join('+');
-    const ver    = g.bp?.version || g.rp?.version || '';
-    const state  = active ? '{green-fg}[ON] {/}' : '{red-fg}[OFF]{/}';
-    return `${state} [${tags}] ${g.name} v${ver}`;
-  });
-
-  list.setItems(buildItems());
-
-  list.on('select', (_, idx) => {
-    const [, group] = entries[idx];
-    const active = (group.bp && isActive(group.bp.uuid)) || (group.rp && isActive(group.rp.uuid));
-    if (active) deactivateGroup(group); else activateGroup(group);
-    list.setItems(buildItems());
-    list.select(idx);
+  const refresh = () => {
+    breadcrumb.setContent(' ' + currentPath);
+    let entries = [];
+    try {
+      entries = fs.readdirSync(currentPath)
+        .map(f => {
+          const full = path.join(currentPath, f);
+          const isDir = fs.statSync(full).isDirectory();
+          return { name: f, isDir };
+        })
+        .sort((a, b) => {
+          if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
+          return a.name.localeCompare(b.name);
+        });
+    } catch {}
+    list.setItems(entries.map(e => e.isDir ? '{cyan-fg}' + e.name + '/{/}' : e.name));
+    list._dirEntries = entries;
     screen.render();
+  };
+
+  refresh();
+
+  screen.key(['l'], () => {
+    const idx = list.selected;
+    const entries = list._dirEntries || [];
+    if (!entries[idx]) return;
+    const entry = entries[idx];
+    if (entry.isDir) { currentPath = path.join(currentPath, entry.name); refresh(); }
   });
 
-  screen.key(['i', 'I'], () => showInstallScreen(bpPacks, rpPacks));
-  screen.key(['q', 'Q', 'C-c'], () => process.exit(0));
+  screen.key(['h'], () => {
+    const parent = path.dirname(currentPath);
+    if (parent !== currentPath) { currentPath = parent; refresh(); }
+  });
+
+  screen.key('enter', () => onSelect(currentPath));
+  screen.key('escape', () => onCancel());
 
   screen.append(header);
+  screen.append(breadcrumb);
   screen.append(list);
   list.focus();
   screen.render();
 }
 
-function showInstallScreen(bpPacks, rpPacks) {
-  screen.children.slice().forEach(c => c.detach());
+function showDetailModal(group, onClose) {
 
-  const loading = blessed.box({
-    top: 'center', left: 'center', width: 40, height: 3,
-    content: ' Escaneando archivos...',
-    style: { bg: 'black', fg: 'yellow' },
+  const lines = [];
+  const addPack = (pack, label) => {
+    if (!pack) return;
+    const m = pack.manifest || readJson(path.join(pack.dir, pack.folder, 'manifest.json'));
+    if (!m) return;
+    const i = parseManifestInfo(m);
+    lines.push('{cyan-fg}{bold}── ' + label + ' ──{/}');
+    lines.push('{white-fg}Nombre:{/}       ' + (i.name || pack.folder));
+    lines.push('{white-fg}Descripción:{/}  ' + (i.desc || 'pack.description'));
+    lines.push('{white-fg}Versión:{/}      ' + i.ver);
+    lines.push('{white-fg}Motor mínimo:{/} ' + i.minEng);
+    lines.push('{white-fg}UUID:{/}         {gray-fg}' + i.uuid + '{/}');
+    lines.push('{white-fg}Formato:{/}      v' + i.formatVersion);
+    if (i.authors)              lines.push('{white-fg}Autores:{/}      ' + i.authors);
+    if (i.caps)                 lines.push('{white-fg}Capacidades:{/} ' + i.caps);
+    if (i.depModules.length)    lines.push('{white-fg}Módulos:{/}      ' + i.depModules.join('  |  '));
+    if (i.depPacks.length)      lines.push('{white-fg}Deps (packs):{/} ' + i.depPacks.join('\n              '));
+    if (i.subpacks.length)      lines.push('{white-fg}Subpacks:{/}     ' + i.subpacks.join(', '));
+    lines.push('');
+  };
+
+  addPack(group.bp, 'Behavior Pack');
+  addPack(group.rp, 'Resource Pack');
+
+  const modalH = Math.min(lines.length + 4, screen.height - 4);
+  const modal = blessed.box({
+    top: 'center', left: 'center',
+    width: '70%', height: modalH,
+    border: { type: 'line' },
+    label: ' {cyan-fg}Detalles — Esc para cerrar{/} ',
+    tags: true, scrollable: true, scrollbar: { ch: '|' },
+    keys: true, vi: true,
+    content: lines.join('\n'),
+    style: { border: { fg: 'cyan' }, fg: 'white', bg: 'black' },
   });
-  screen.append(loading);
+
+  screen.append(modal);
+  modal.focus();
   screen.render();
 
+  const close = () => {
+    modal.detach();
+    onClose();
+  };
+  modal.key(['escape', 'q'], close);
+
+  modal.key(['C-c'], () => process.exit(0));
+}
+
+function showWorldScreen() {
+  screen.children.slice().forEach(c => c.detach());
+  screen.removeAllListeners('keypress');
+
+  const { BP, RP, WORLDS } = getDirs();
+  let showNoIcon = false;
+
+  const rebuild = () => {
+    const bpPacks = scanPackDir(BP, !showNoIcon);
+    const rpPacks = scanPackDir(RP, !showNoIcon);
+    const groups  = buildAddonGroups(bpPacks, rpPacks);
+    const bpPath  = path.join(WORLDS, worldName, 'world_behavior_packs.json');
+    const rpPath  = path.join(WORLDS, worldName, 'world_resource_packs.json');
+    worldBPJson   = readJson(bpPath) || [];
+    worldRPJson   = readJson(rpPath) || [];
+    return { bpPacks, rpPacks, groups };
+  };
+
+  let { bpPacks, rpPacks, groups } = rebuild();
+  let entries = Object.entries(groups);
+
+  const header = blessed.box({
+    top: 0, left: 0, width: '100%', height: 3, tags: true,
+    content: '',
+    style: { bg: 'black', fg: 'white' },
+  });
+
+  const updateHeader = () => {
+    const oLabel = showNoIcon ? '{yellow-fg}[O] Ocultar sin icono{/}' : '{white-fg}[O] Mostrar sin icono{/}';
+    header.setContent(' World: {bold}' + worldName + '{/}  |  {cyan-fg}Enter{/} toggle  {cyan-fg}M{/} detalles  {cyan-fg}D{/} desinstalar  {cyan-fg}I{/} instalar  {cyan-fg}P{/} rutas  ' + oLabel + '  {cyan-fg}Q{/} salir');
+    screen.render();
+  };
+
+  const listBox = blessed.list({
+    top: 3, left: 0, width: '100%', height: '100%-3',
+    keys: true, vi: true, mouse: true, tags: true,
+    scrollable: true, scrollbar: { ch: '|' },
+    style: { selected: { bg: 'blue', fg: 'white' }, item: { fg: 'white' } },
+  });
+
+  const buildItems = () => {
+    const { BP, RP } = getDirs();
+    return entries.map(([, g]) => {
+      const active  = (g.bp && isActive(g.bp.uuid)) || (g.rp && isActive(g.rp.uuid));
+      const tags    = [g.bp ? 'BP' : null, g.rp ? 'RP' : null].filter(Boolean).join('+');
+      const ver     = g.bp?.version || g.rp?.version || '';
+      const state   = active ? '{green-fg}[ON] {/}' : '{red-fg}[OFF]{/}';
+      const szParts = [];
+      if (g.bp?.folder) szParts.push(dirSize(path.join(BP, g.bp.folder)));
+      if (g.rp?.folder) szParts.push(dirSize(path.join(RP, g.rp.folder)));
+      const sizeStr = szParts.length ? ' {gray-fg}[' + szParts.join('+') + ']{/}' : '';
+      return state + ' [' + tags + '] ' + g.name + ' v' + ver + sizeStr;
+    });
+  };
+
+  const renderList = () => {
+    const idx = listBox.selected || 0;
+    listBox.setItems(buildItems());
+    listBox.select(idx);
+    screen.render();
+  };
+
+  const refreshList = () => {
+    const r = rebuild();
+    bpPacks = r.bpPacks; rpPacks = r.rpPacks; groups = r.groups;
+    entries = Object.entries(groups);
+    renderList();
+  };
+
+  screen.append(header);
+  screen.append(listBox);
+  listBox.focus();
+
+  updateHeader();
+  renderList();
+
+
+  listBox.key('enter', () => {
+    const entry = entries[listBox.selected];
+    if (!entry) return;
+    const [, group] = entry;
+    const active = (group.bp && isActive(group.bp.uuid)) || (group.rp && isActive(group.rp.uuid));
+    if (active) deactivateGroup(group); else activateGroup(group);
+    renderList();
+  });
+
+
+  listBox.key(['m', 'M'], () => {
+    const entry = entries[listBox.selected];
+    if (!entry) return;
+    showDetailModal(entry[1], () => {
+      listBox.focus();
+      screen.render();
+    });
+  });
+
+  screen.key(['o', 'O'], () => {
+    showNoIcon = !showNoIcon;
+    updateHeader();
+    refreshList();
+  });
+
+  screen.key(['i', 'I'], () => showInstallScreen(bpPacks, rpPacks));
+  screen.key(['q', 'Q', 'C-c'], () => process.exit(0));
+
+  screen.key(['d', 'D'], () => {
+    const entry = entries[listBox.selected];
+    if (!entry) return;
+    const [, group] = entry;
+    showConfirmModal('Desinstalar: ' + group.name + '?', () => {
+      deleteGroup(group);
+      showWorldScreen();
+    }, () => showWorldScreen());
+  });
+
+  screen.key(['p', 'P'], () => {
+    showFilePicker('Selecciona MC_ROOT', MC_ROOT, (selected) => {
+      MC_ROOT = selected;
+      showFilePicker('Selecciona DL_DIR', DL_DIR, (sel2) => {
+        DL_DIR = sel2;
+        showWorldScreen();
+      }, () => showWorldScreen());
+    }, () => showWorldScreen());
+  });
+
+  screen.render();
+}
+
+function showInstallScreen(bpPacks, rpPacks) {
+  screen.children.slice().forEach(c => c.detach());
+  screen.removeAllListeners('keypress');
+
+  const statusMsg = statusBox(' Escaneando archivos...');
+  screen.append(statusMsg);
+  screen.render();
+
+  const setStatus = (msg) => { statusMsg.setContent(' ' + msg); screen.render(); };
+
   let result;
-  try { result = buildInstallPreview(bpPacks, rpPacks); }
+  try { result = buildInstallPreview(bpPacks, rpPacks, setStatus); }
   catch (e) { result = { items: [], files: [] }; }
 
   const { items: preview, files: srcFiles } = result;
-
   screen.children.slice().forEach(c => c.detach());
 
   const header = blessed.box({
-    top: 0, left: 0, width: '100%', height: 3,
-    content: ` Instalar Addons  |  {cyan-fg}Enter{/cyan-fg} confirmar  {cyan-fg}B{/cyan-fg} volver  {cyan-fg}Q{/cyan-fg} salir`,
-    tags: true,
+    top: 0, left: 0, width: '100%', height: 3, tags: true,
+    content: ' Instalar  |  {cyan-fg}Enter{/cyan-fg} confirmar  {cyan-fg}B{/cyan-fg} volver  {cyan-fg}Q{/cyan-fg} salir',
     style: { bg: 'black', fg: 'white' },
   });
 
   const lines = preview.length === 0
     ? ['{yellow-fg}Sin archivos en ' + DL_DIR + '{/}']
     : preview.map(p => {
-        const action = p.existing
-          ? `{yellow-fg}[ACTUALIZAR]{/} ${p.existing.name} v${p.existing.version} -> v${p.newVer}`
-          : `{green-fg}[NUEVO]{/} v${p.newVer}`;
-        return `[${p.type}] ${p.name}  ${action}`;
+        const action = p.downgrade
+          ? '{red-fg}[DOWNGRADE]{/} v' + p.newVer + ' < v' + p.existing.version + ' (ignorado)'
+          : p.existing
+            ? '{yellow-fg}[ACTUALIZAR]{/} ' + p.existing.name + ' v' + p.existing.version + ' -> v' + p.newVer
+            : '{green-fg}[NUEVO]{/} v' + p.newVer;
+        return '[' + p.type + '] ' + p.name + '  ' + action;
       });
 
-  const list = blessed.box({
+  const content = blessed.box({
     top: 3, left: 0, width: '100%', height: '100%-3',
     content: lines.join('\n'),
     tags: true, scrollable: true, scrollbar: { ch: '|' },
@@ -365,41 +684,63 @@ function showInstallScreen(bpPacks, rpPacks) {
     style: { fg: 'white', bg: 'black' },
   });
 
-  screen.removeAllListeners('keypress');
   screen.key(['b', 'B'], () => showWorldScreen());
   screen.key(['q', 'Q', 'C-c'], () => process.exit(0));
 
   if (preview.length > 0) {
     screen.key('enter', () => {
-      try {
-        doInstall(preview, srcFiles);
-        list.setContent('{green-fg}Instalacion completada. B para volver.{/}');
-      } catch (e) {
-        list.setContent(`{red-fg}Error: ${e.message}{/}`);
-      }
+      screen.removeAllListeners('keypress');
+      const progBox = statusBox(' Instalando...');
+      screen.append(progBox);
       screen.render();
+
+      let installed = [], err = null;
+      try {
+        installed = doInstall(preview, srcFiles, (msg) => { progBox.setContent(' ' + msg); screen.render(); });
+      } catch (e) { err = e; }
+
+      screen.children.find(c => c === progBox)?.detach();
+
+      if (err) {
+        content.setContent('{red-fg}Error: ' + err.message + '{/}');
+        screen.render();
+        screen.key(['b', 'B'], () => showWorldScreen());
+        screen.key(['q', 'Q', 'C-c'], () => process.exit(0));
+        return;
+      }
+
+      if (checkOwnership(installed)) {
+        content.setContent('{green-fg}Instalacion completada.{/}');
+        screen.render();
+        showConfirmModal('Permisos incorrectos. Corregir con sudo?', () => {
+          fixOwnership(installed);
+          showWorldScreen();
+        }, () => showWorldScreen());
+      } else {
+        content.setContent('{green-fg}Instalacion completada. B para volver.{/}');
+        screen.render();
+        screen.key(['b', 'B'], () => showWorldScreen());
+        screen.key(['q', 'Q', 'C-c'], () => process.exit(0));
+      }
     });
   }
 
   screen.append(header);
-  screen.append(list);
-  list.focus();
+  screen.append(content);
+  content.focus();
   screen.render();
 }
 
 function showWorldSelect() {
-  if (!fs.existsSync(WORLDS_DIR)) {
-    console.error('No existe: ' + WORLDS_DIR);
-    process.exit(1);
-  }
+  const { WORLDS } = getDirs();
+  if (!fs.existsSync(WORLDS)) { console.error('No existe: ' + WORLDS); process.exit(1); }
+  const worlds = fs.readdirSync(WORLDS).filter(f => fs.statSync(path.join(WORLDS, f)).isDirectory());
+  if (worlds.length === 0) { console.error('Sin mundos en ' + WORLDS); process.exit(1); }
 
-  const worlds = fs.readdirSync(WORLDS_DIR)
-    .filter(f => fs.statSync(path.join(WORLDS_DIR, f)).isDirectory());
-
-  if (worlds.length === 0) {
-    console.error('Sin mundos en ' + WORLDS_DIR);
-    process.exit(1);
-  }
+  const worldItems = worlds.map(w => {
+    const sz = dirSize(path.join(WORLDS, w));
+    return { name: w, label: w + ' {gray-fg}(' + sz + '){/}' };
+  });
 
   const box = blessed.box({
     top: 0, left: 0, width: '100%', height: 3,
@@ -408,22 +749,14 @@ function showWorldSelect() {
   });
 
   const list = blessed.list({
-    top: 3, left: 'center', width: 60, height: worlds.length + 2,
-    keys: true, vi: true, mouse: true,
+    top: 3, left: 'center', width: 60, height: worldItems.length + 2,
+    keys: true, vi: true, mouse: true, tags: true,
     border: { type: 'line' },
-    style: {
-      border: { fg: 'cyan' },
-      selected: { bg: 'blue', fg: 'white' },
-      item: { fg: 'white' },
-    },
-    items: worlds,
+    style: { border: { fg: 'cyan' }, selected: { bg: 'blue', fg: 'white' }, item: { fg: 'white' } },
+    items: worldItems.map(w => w.label),
   });
 
-  list.on('select', (item) => {
-    worldName = item.getText();
-    showWorldScreen();
-  });
-
+  list.on('select', (_, idx) => { worldName = worldItems[idx].name; showWorldScreen(); });
   screen.key(['q', 'Q', 'C-c'], () => process.exit(0));
   screen.append(box);
   screen.append(list);
