@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 
 // ============================================================
-let MC_ROOT = '/opt/minecraft-bedrock-server';
+let MC_ROOT = '/opt/minecraft-bedrock-server'; 
+// Android /data/user/0/com.mojang.minecraftpe/games/com.mojang 
+
 let DL_DIR  = '/root/Downloads/minecraft';  // .mcpack .mcaddon .zip
-// DL_DIR/resources/ carpetas descomprimidas
+// DL_DIR/resources/ carpetas ya descomprimidas
 // ============================================================
 
 const blessed = require('blessed');
