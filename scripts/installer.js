@@ -10,10 +10,8 @@ const path    = require('path');
 const { spawnSync } = require('child_process');
 
 let MC_ROOT  = process.env.MC_ROOT  || '/opt/minecraft-bedrock-server';
-let DL_DIR   = process.env.DL_DIR   || '/root/Downloads/minecraft';
+let DL_DIR   = process.env.DL_DIR   || path.join(__dirname, '..', 'resources');
 let TEMP_DIR = process.env.TEMP_DIR || '/tmp/mc_addon_install';
-
-const SPIN_FRAMES = ['⠋','⠙','⠹','⠸','⠼','⠴','⠦','⠧','⠇','⠏'];
 
 const screen = blessed.screen({ smartCSR: true, title: 'MC Addon Manager' });
 
@@ -45,8 +43,6 @@ function upsertEnv(key, value) {
 const ROUTE_VARS = [
   { key: 'MC_ROOT',    get: () => MC_ROOT,               set: v => { MC_ROOT  = v; }, optional: false,
     title: 'Selecciona MC_ROOT (servidor Minecraft)',     default: '/opt/minecraft-bedrock-server' },
-  { key: 'DL_DIR',     get: () => DL_DIR,                set: v => { DL_DIR   = v; }, optional: false,
-    title: 'Selecciona DL_DIR (descargas)',               default: '/root/Downloads/minecraft' },
   { key: 'BP_DIR',     get: () => process.env.BP_DIR,    set: () => {}, optional: true,
     title: 'Selecciona BP_DIR (behavior_packs)',          default: null },
   { key: 'RP_DIR',     get: () => process.env.RP_DIR,    set: () => {}, optional: true,
@@ -57,8 +53,8 @@ const ROUTE_VARS = [
 
 function needsPicker(entry) {
   const val = entry.get();
-  if (!val) return !entry.optional;
-  return !fs.existsSync(val);
+  if (entry.optional) return val && !fs.existsSync(val);
+  return !val || !fs.existsSync(val);
 }
 
 function runValidation(vars, idx, onDone) {
@@ -304,26 +300,16 @@ function fixOwnership(installedPaths) {
   screen.render();
 }
 
-function statusBox(content) {
-  return blessed.box({
-    top: 'center', left: 'center', width: 60, height: 3,
-    content, tags: true,
-    style: { bg: 'black', fg: 'yellow' },
+function showWait(label, fn) {
+  const b = blessed.box({
+    top: 'center', left: 'center', width: 50, height: 5,
+    border: { type: 'line' }, tags: true,
+    content: '\n  ⏳ ' + label,
+    style: { border: { fg: 'yellow' }, bg: 'black', fg: 'yellow' },
   });
-}
-
-function startSpinner(box, label) {
-  let i = 0;
-  const id = setInterval(() => {
-    box.setContent(' ' + SPIN_FRAMES[i % SPIN_FRAMES.length] + ' ' + label);
-    screen.render();
-    i++;
-  }, 80);
-  return id;
-}
-
-function stopSpinner(id) {
-  clearInterval(id);
+  screen.append(b);
+  screen.render();
+  setImmediate(() => { fn(); b.detach(); screen.render(); });
 }
 
 function extractToTemp(file) {
@@ -373,19 +359,17 @@ function extractNested(dir, onFile) {
 function scanDownloads() {
   const entries = [];
   if (!fs.existsSync(DL_DIR)) return entries;
-  for (const f of fs.readdirSync(DL_DIR))
+  for (const f of fs.readdirSync(DL_DIR)) {
+    const full = path.join(DL_DIR, f);
     if (/\.(mcpack|mcaddon|zip)$/.test(f))
-      entries.push({ full: path.join(DL_DIR, f), isDir: false });
-  const resDir = path.join(DL_DIR, 'resources');
-  if (fs.existsSync(resDir))
-    for (const f of fs.readdirSync(resDir)) {
-      const full = path.join(resDir, f);
-      if (fs.statSync(full).isDirectory()) entries.push({ full, isDir: true });
-    }
+      entries.push({ full, isDir: false });
+    else if (fs.statSync(full).isDirectory())
+      entries.push({ full, isDir: true });
+  }
   return entries;
 }
 
-function buildInstallPreview(bpPacks, rpPacks, onStatus) {
+function buildInstallPreview(bpPacks, rpPacks) {
   const { BP, RP } = getDirs();
   const entries = scanDownloads();
   if (entries.length === 0) return { items: [], files: [] };
@@ -400,12 +384,10 @@ function buildInstallPreview(bpPacks, rpPacks, onStatus) {
     try {
       let scanDir;
       if (entry.isDir) {
-        if (onStatus) onStatus('Escaneando: ' + path.basename(entry.full));
         scanDir = entry.full;
       } else {
-        if (onStatus) onStatus('Extrayendo: ' + path.basename(entry.full));
         scanDir = extractToTemp(entry.full);
-        extractNested(scanDir, (f) => onStatus && onStatus('Extrayendo: ' + f));
+        extractNested(scanDir, () => {});
       }
 
       for (const mp of findManifests(scanDir)) {
@@ -434,7 +416,7 @@ function buildInstallPreview(bpPacks, rpPacks, onStatus) {
   return { items: preview, files: sourceFiles };
 }
 
-function doInstall(preview, sourceFiles, onStatus) {
+function doInstall(preview, sourceFiles) {
   const { BP, RP } = getDirs();
   const installed = [];
 
@@ -459,7 +441,6 @@ function doInstall(preview, sourceFiles, onStatus) {
     }
     const dest = path.join(destBase, baseName);
 
-    if (onStatus) onStatus('Instalando: ' + p.name + ' [' + p.type + ']');
 
     let packRoot = p.packRoot;
 
@@ -647,11 +628,6 @@ function showWorldScreen() {
   const { BP, RP, WORLDS } = getDirs();
   let showNoIcon = false;
 
-  const spinBox = statusBox('');
-  screen.append(spinBox);
-  const spinId = startSpinner(spinBox, 'Cargando packs...');
-  screen.render();
-
   const rebuild = () => {
     const bpPacks = scanPackDir(BP, !showNoIcon);
     const rpPacks = scanPackDir(RP, !showNoIcon);
@@ -664,9 +640,6 @@ function showWorldScreen() {
   };
 
   let { bpPacks, rpPacks, groups } = rebuild();
-
-  stopSpinner(spinId);
-  spinBox.detach();
 
   let entries = Object.entries(groups);
 
@@ -712,16 +685,12 @@ function showWorldScreen() {
   };
 
   const refreshList = () => {
-    const spinB = statusBox('');
-    screen.append(spinB);
-    const sid = startSpinner(spinB, 'Actualizando...');
-    screen.render();
-    const r = rebuild();
-    stopSpinner(sid);
-    spinB.detach();
-    bpPacks = r.bpPacks; rpPacks = r.rpPacks; groups = r.groups;
-    entries = Object.entries(groups);
-    renderList();
+    showWait('Actualizando...', () => {
+      const r = rebuild();
+      bpPacks = r.bpPacks; rpPacks = r.rpPacks; groups = r.groups;
+      entries = Object.entries(groups);
+      renderList();
+    });
   };
 
   screen.append(header);
@@ -763,14 +732,10 @@ function showWorldScreen() {
     if (!entry) return;
     const [, group] = entry;
     showConfirmModal('Desinstalar: ' + group.name + '?', () => {
-      const spinB = statusBox('');
-      screen.append(spinB);
-      const sid = startSpinner(spinB, 'Desinstalando ' + group.name + '...');
-      screen.render();
-      deleteGroup(group);
-      stopSpinner(sid);
-      spinB.detach();
-      showWorldScreen();
+      showWait('Desinstalando ' + group.name + '...', () => {
+        deleteGroup(group);
+        showWorldScreen();
+      });
     }, () => showWorldScreen());
   });
 
@@ -791,24 +756,15 @@ function showInstallScreen(bpPacks, rpPacks) {
   screen.children.slice().forEach(c => c.detach());
   screen.removeAllListeners('keypress');
 
-  const spinBox = statusBox('');
-  screen.append(spinBox);
-  const spinId = startSpinner(spinBox, 'Escaneando archivos...');
-  screen.render();
+  showWait('Escaneando archivos...', () => {
+    let result;
+    try { result = buildInstallPreview(bpPacks, rpPacks); }
+    catch (e) { result = { items: [], files: [] }; }
+    _continueInstallScreen(result, bpPacks, rpPacks);
+  });
+}
 
-  let lastMsg = 'Escaneando...';
-  const setStatus = (msg) => {
-    lastMsg = msg;
-    stopSpinner(spinId);
-    spinBox.setContent(' ' + msg);
-    screen.render();
-  };
-
-  let result;
-  try { result = buildInstallPreview(bpPacks, rpPacks, setStatus); }
-  catch (e) { result = { items: [], files: [] }; }
-
-  stopSpinner(spinId);
+function _continueInstallScreen(result, bpPacks, rpPacks) {
   screen.children.slice().forEach(c => c.detach());
 
   const header = blessed.box({
@@ -845,46 +801,32 @@ function showInstallScreen(bpPacks, rpPacks) {
     screen.key('enter', () => {
       screen.removeAllListeners('keypress');
 
-      const progBox = statusBox('');
-      screen.append(progBox);
-      let progSpinId = startSpinner(progBox, 'Instalando...');
-      screen.render();
+      showWait('Instalando...', () => {
+        let installed = [], err = null;
+        try { installed = doInstall(preview, srcFiles); } catch (e) { err = e; }
 
-      const setProgStatus = (msg) => {
-        stopSpinner(progSpinId);
-        progSpinId = startSpinner(progBox, msg);
-        screen.render();
-      };
+        if (err) {
+          content.setContent('{red-fg}Error: ' + err.message + '{/}');
+          screen.render();
+          screen.key(['b', 'B'], () => showWorldScreen());
+          screen.key(['q', 'Q', 'C-c'], () => process.exit(0));
+          return;
+        }
 
-      let installed = [], err = null;
-      try {
-        installed = doInstall(preview, srcFiles, setProgStatus);
-      } catch (e) { err = e; }
-
-      stopSpinner(progSpinId);
-      screen.children.find(c => c === progBox)?.detach();
-
-      if (err) {
-        content.setContent('{red-fg}Error: ' + err.message + '{/}');
-        screen.render();
-        screen.key(['b', 'B'], () => showWorldScreen());
-        screen.key(['q', 'Q', 'C-c'], () => process.exit(0));
-        return;
-      }
-
-      if (checkOwnership(installed)) {
-        content.setContent('{green-fg}Instalacion completada.{/}');
-        screen.render();
-        showConfirmModal('Permisos incorrectos. Corregir con sudo?', () => {
-          fixOwnership(installed);
-          showWorldScreen();
-        }, () => showWorldScreen());
-      } else {
-        content.setContent('{green-fg}Instalacion completada. B para volver.{/}');
-        screen.render();
-        screen.key(['b', 'B'], () => showWorldScreen());
-        screen.key(['q', 'Q', 'C-c'], () => process.exit(0));
-      }
+        if (checkOwnership(installed)) {
+          content.setContent('{green-fg}Instalacion completada.{/}');
+          screen.render();
+          showConfirmModal('Permisos incorrectos. Corregir con sudo?', () => {
+            fixOwnership(installed);
+            showWorldScreen();
+          }, () => showWorldScreen());
+        } else {
+          content.setContent('{green-fg}Instalacion completada. B para volver.{/}');
+          screen.render();
+          screen.key(['b', 'B'], () => showWorldScreen());
+          screen.key(['q', 'Q', 'C-c'], () => process.exit(0));
+        }
+      });
     });
   }
 
@@ -900,18 +842,16 @@ function showWorldSelect() {
   const worlds = fs.readdirSync(WORLDS).filter(f => fs.statSync(path.join(WORLDS, f)).isDirectory());
   if (worlds.length === 0) { console.error('Sin mundos en ' + WORLDS); process.exit(1); }
 
-  const spinBox = statusBox('');
-  screen.append(spinBox);
-  const spinId = startSpinner(spinBox, 'Cargando mundos...');
-  screen.render();
-
-  const worldItems = worlds.map(w => {
-    const sz = dirSize(path.join(WORLDS, w));
-    return { name: w, label: w + ' {gray-fg}(' + sz + '){/}' };
+  showWait('Cargando mundos...', () => {
+    const worldItems = worlds.map(w => {
+      const sz = dirSize(path.join(WORLDS, w));
+      return { name: w, label: w + ' {gray-fg}(' + sz + '){/}' };
+    });
+    _continueWorldSelect(worldItems);
   });
+}
 
-  stopSpinner(spinId);
-  spinBox.detach();
+function _continueWorldSelect(worldItems) {
 
   const box = blessed.box({
     top: 0, left: 0, width: '100%', height: 3,
