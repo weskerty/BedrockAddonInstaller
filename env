@@ -1,5 +1,5 @@
 MC_ROOT=/opt/minecraft-bedrock-server
-DL_DIR=/root/Downloads/minecraft
+DL_DIR=
 TEMP_DIR=/tmp/mc_addon_install
 
 
