@@ -1,0 +1,12 @@
+MC_ROOT=/opt/minecraft-bedrock-server
+DL_DIR=/root/Downloads/minecraft
+TEMP_DIR=/tmp/mc_addon_install
+
+
+
+
+BP_DIR=
+RP_DIR=
+WORLDS_DIR=
+
+GIT_BRANCH=master

@@ -1,0 +1,10 @@
+{
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "adm-zip": "^0.5.17",
+    "blessed": "^0.1.81",
+    "dotenv": "^16.4.5"
+  }
+}
