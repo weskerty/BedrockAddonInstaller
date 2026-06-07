@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+//# Recordar aveces datos name descripcion estan en addon/texts dependeindo del idioma.
+
 require('dotenv').config();
 
 const { execSync, spawn } = require('child_process');
