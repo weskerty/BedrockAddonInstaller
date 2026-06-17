@@ -527,7 +527,7 @@ function doInstall(preview, sourceFiles) {
   if (fs.existsSync(TEMP_DIR)) fs.rmSync(TEMP_DIR, { recursive: true });
 
   if (MOVE_TO_INSTALLED) {
-    const doneDir = path.join(DL_DIR, 'Instalados');
+    const doneDir = path.join('Instalados');
     fs.mkdirSync(doneDir, { recursive: true });
     const moved = new Set();
     for (const entry of sourceFiles) {
