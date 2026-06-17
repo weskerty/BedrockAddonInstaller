@@ -9,9 +9,12 @@ const fs      = require('fs');
 const path    = require('path');
 const { spawnSync } = require('child_process');
 
+const SL = path.join(__dirname, 'leveldat.js');
+
 let MC_ROOT  = process.env.MC_ROOT  || '/opt/minecraft-bedrock-server';
 let DL_DIR   = process.env.DL_DIR   || path.join(__dirname, '..', 'resources');
 let TEMP_DIR = process.env.TEMP_DIR || '/tmp/mc_addon_install';
+let MOVE_TO_INSTALLED = (process.env.MOVE_TO_INSTALLED || 'true') !== 'false';
 
 const screen = blessed.screen({ smartCSR: true, title: 'MC Addon Manager' });
 
@@ -120,6 +123,33 @@ function stripCodes(s) {
   return (s || '').replace(/§./g, '').trim();
 }
 
+function parseLang(p) {
+  try {
+    const out = {};
+    for (const ln of fs.readFileSync(p, 'utf8').split('\n')) {
+      const eq = ln.indexOf('=');
+      if (eq < 0) continue;
+      const k = ln.slice(0, eq).trim();
+      const v = ln.slice(eq + 1).replace(/#.*$/, '').trim();
+      if (k) out[k] = v;
+    }
+    return out;
+  } catch { return null; }
+}
+
+function readLangTexts(packDir) {
+  const td = path.join(packDir, 'texts');
+  if (!fs.existsSync(td)) return null;
+  let files;
+  try { files = fs.readdirSync(td).filter(f => f.endsWith('.lang')); } catch { return null; }
+  if (!files.length) return null;
+  const pick = (fn) => files.find(fn) || null;
+  const chosen = pick(f => /^es_/i.test(f))
+    || pick(f => /^en_/i.test(f))
+    || files[0];
+  return parseLang(path.join(td, chosen));
+}
+
 function sanitizeName(s) {
   return s.replace(/[^a-zA-Z]/g, '').trim();
 }
@@ -186,9 +216,21 @@ function scanPackDir(dir, hideNative) {
     const uuid = m.header.uuid;
     const info = parseManifestInfo(m);
     const ver  = info.ver;
-    const name = (info.name && !m.header.name?.startsWith('pack.')) ? info.name : folder;
+    const nameIsGeneric = !info.name || m.header.name?.startsWith('pack.');
+    const descIsGeneric = !info.desc || m.header.description?.startsWith('pack.');
+    let rname = nameIsGeneric ? null : info.name;
+    let rdesc = descIsGeneric ? null : info.desc;
+    if (nameIsGeneric || descIsGeneric) {
+      const lt = readLangTexts(packDir);
+      if (lt) {
+        if (nameIsGeneric && lt['pack.name']) rname = stripCodes(lt['pack.name']);
+        if (descIsGeneric && lt['pack.description']) rdesc = stripCodes(lt['pack.description']);
+      }
+    }
+    const name = rname || folder;
+    const desc = rdesc || info.desc;
     if (packs[uuid] && cmpVer(ver, packs[uuid].version) <= 0) continue;
-    packs[uuid] = { uuid, name, desc: info.desc, version: ver, type: detectPackType(m),
+    packs[uuid] = { uuid, name, desc, version: ver, type: detectPackType(m),
       deps: (m.dependencies || []).map(d => d.uuid).filter(Boolean), folder, dir, manifest: m };
   }
   return packs;
@@ -262,10 +304,14 @@ function deactivateGroup(group) {
   }
 }
 
-function deleteGroup(group) {
+function rmrf(p) {
+  if (fs.existsSync(p)) spawnSync('rm', ['-rf', p]);
+}
+
+function deleteGroup(g) {
   const { BP, RP } = getDirs();
-  if (group.bp) { const p = path.join(BP, group.bp.folder); if (fs.existsSync(p)) fs.rmSync(p, { recursive: true }); }
-  if (group.rp) { const p = path.join(RP, group.rp.folder); if (fs.existsSync(p)) fs.rmSync(p, { recursive: true }); }
+  if (g.bp) rmrf(path.join(BP, g.bp.folder));
+  if (g.rp) rmrf(path.join(RP, g.rp.folder));
 }
 
 function getMCOwner() {
@@ -396,13 +442,19 @@ function buildInstallPreview(bpPacks, rpPacks) {
         const type    = detectPackType(m);
         const uuid    = m.header.uuid;
         const rawName = m.header.name || '';
-        const name    = sanitizeName(stripCodes((rawName && !rawName.startsWith('pack.')) ? rawName : path.basename(path.dirname(mp))));
+        const packRootDir = path.dirname(mp);
+        let rname = (!rawName || rawName.startsWith('pack.')) ? null : stripCodes(rawName);
+        if (!rname) {
+          const lt = readLangTexts(packRootDir);
+          if (lt?.['pack.name']) rname = stripCodes(lt['pack.name']);
+        }
+        const name    = sanitizeName(rname || path.basename(packRootDir));
         const newVer  = parseVer(m.header.version);
         const existing = type === 'BP' ? bpPacks[uuid] : rpPacks[uuid];
         const downgrade = existing ? cmpVer(newVer, existing.version) < 0 : false;
         preview.push({ file: path.basename(entry.full), name, uuid, type, newVer, isDir: entry.isDir, downgrade,
           existing: existing ? { name: existing.name, version: existing.version, folder: existing.folder } : null,
-          packRoot: path.dirname(mp) });
+          packRoot: packRootDir });
       }
       sourceFiles.push(entry);
 
@@ -474,17 +526,19 @@ function doInstall(preview, sourceFiles) {
 
   if (fs.existsSync(TEMP_DIR)) fs.rmSync(TEMP_DIR, { recursive: true });
 
-  const doneDir = path.join('Instalados');
-  fs.mkdirSync(doneDir, { recursive: true });
-  const moved = new Set();
-  for (const entry of sourceFiles) {
-    if (moved.has(entry.full)) continue;
-    moved.add(entry.full);
-    const dest = path.join(doneDir, path.basename(entry.full));
-    try {
-      if (fs.existsSync(dest)) { entry.isDir ? fs.rmSync(dest, { recursive: true }) : fs.unlinkSync(dest); }
-      fs.renameSync(entry.full, dest);
-    } catch {}
+  if (MOVE_TO_INSTALLED) {
+    const doneDir = path.join(DL_DIR, 'Instalados');
+    fs.mkdirSync(doneDir, { recursive: true });
+    const moved = new Set();
+    for (const entry of sourceFiles) {
+      if (moved.has(entry.full)) continue;
+      moved.add(entry.full);
+      const dst = path.join(doneDir, path.basename(entry.full));
+      try {
+        if (fs.existsSync(dst)) { entry.isDir ? fs.rmSync(dst, { recursive: true }) : fs.unlinkSync(dst); }
+        fs.renameSync(entry.full, dst);
+      } catch {}
+    }
   }
 
   return installed;
@@ -582,18 +636,26 @@ function showDetailModal(group, onClose) {
     const m = pack.manifest || readJson(path.join(pack.dir, pack.folder, 'manifest.json'));
     if (!m) return;
     const i = parseManifestInfo(m);
+    const packDir = path.join(pack.dir, pack.folder);
+    const lt = readLangTexts(packDir);
+    const nameIsGeneric = !i.name || m.header?.name?.startsWith('pack.');
+    const descIsGeneric = !i.desc || m.header?.description?.startsWith('pack.');
+    const dname = (nameIsGeneric && lt?.['pack.name']) ? stripCodes(lt['pack.name']) : (i.name || pack.folder);
+    const ddesc = (descIsGeneric && lt?.['pack.description']) ? stripCodes(lt['pack.description']) : (i.desc || '');
     lines.push('{cyan-fg}{bold}── ' + label + ' ──{/}');
-    lines.push('{white-fg}Nombre:{/}       ' + (i.name || pack.folder));
-    lines.push('{white-fg}Descripcion:{/}  ' + (i.desc || 'pack.description'));
+    lines.push('{white-fg}Nombre:{/}       ' + dname);
+    lines.push('{white-fg}Descripcion:{/}  ' + (ddesc || 'pack.description'));
     lines.push('{white-fg}Version:{/}      ' + i.ver);
     lines.push('{white-fg}Motor minimo:{/} ' + i.minEng);
     lines.push('{white-fg}UUID:{/}         {gray-fg}' + i.uuid + '{/}');
     lines.push('{white-fg}Formato:{/}      v' + i.formatVersion);
-    if (i.authors)              lines.push('{white-fg}Autores:{/}      ' + i.authors);
-    if (i.caps)                 lines.push('{white-fg}Capacidades:{/} ' + i.caps);
-    if (i.depModules.length)    lines.push('{white-fg}Modulos:{/}      ' + i.depModules.join('  |  '));
-    if (i.depPacks.length)      lines.push('{white-fg}Deps (packs):{/} ' + i.depPacks.join('\n              '));
-    if (i.subpacks.length)      lines.push('{white-fg}Subpacks:{/}     ' + i.subpacks.join(', '));
+    if (i.authors)           lines.push('{white-fg}Autores:{/}      ' + i.authors);
+    if (i.caps)              lines.push('{white-fg}Capacidades:{/} ' + i.caps);
+    if (i.depModules.length) lines.push('{white-fg}Modulos:{/}      ' + i.depModules.join('  |  '));
+    if (i.depPacks.length)   lines.push('{white-fg}Deps (packs):{/} ' + i.depPacks.join('\n              '));
+    if (i.subpacks.length)   lines.push('{white-fg}Subpacks:{/}     ' + i.subpacks.join(', '));
+    const td = path.join(packDir, 'texts');
+    if (fs.existsSync(td))   lines.push('{white-fg}Textos:{/}       {gray-fg}' + td + '{/}');
     lines.push('');
   };
 
@@ -651,7 +713,7 @@ function showWorldScreen() {
 
   const updateHeader = () => {
     const oLabel = showNoIcon ? '{yellow-fg}[O] Ocultar sin icono{/}' : '{white-fg}[O] Mostrar sin icono{/}';
-    header.setContent(' World: {bold}' + worldName + '{/}  |  {cyan-fg}Enter{/} toggle  {cyan-fg}M{/} detalles  {cyan-fg}D{/} desinstalar  {cyan-fg}I{/} instalar  {cyan-fg}P{/} rutas  ' + oLabel + '  {cyan-fg}Q{/} salir');
+    header.setContent(' World: {bold}' + worldName + '{/}  |  {cyan-fg}Enter{/} toggle  {cyan-fg}M{/} detalles  {cyan-fg}D{/} desinstalar  {cyan-fg}I{/} instalar  {cyan-fg}E{/} editar world  {cyan-fg}P{/} rutas  ' + oLabel + '  {cyan-fg}Q{/} salir');
     screen.render();
   };
 
@@ -725,18 +787,27 @@ function showWorldScreen() {
   });
 
   screen.key(['i', 'I'], () => showInstallScreen(bpPacks, rpPacks));
+
+  screen.key(['e', 'E'], () => {
+    const { WORLDS } = getDirs();
+    const wp = path.join(WORLDS, worldName);
+    screen.destroy();
+    spawnSync(process.execPath, [SL, wp], { stdio: 'inherit' });
+    process.exit(0);
+  });
   screen.key(['q', 'Q', 'C-c'], () => process.exit(0));
 
   screen.key(['d', 'D'], () => {
     const entry = entries[listBox.selected];
     if (!entry) return;
-    const [, group] = entry;
-    showConfirmModal('Desinstalar: ' + group.name + '?', () => {
-      showWait('Desinstalando ' + group.name + '...', () => {
-        deleteGroup(group);
+    const [, grp] = entry;
+    const grpName = grp.name;
+    showConfirmModal('Desinstalar: ' + grpName + '?', () => {
+      showWait('Desinstalando ' + grpName + '...', () => {
+        deleteGroup(grp);
         showWorldScreen();
       });
-    }, () => showWorldScreen());
+    }, () => { listBox.focus(); screen.render(); });
   });
 
   screen.key(['p', 'P'], () => {
