@@ -1,20 +1,22 @@
 #!/usr/bin/env node
 
-const ENV_PATH = require('path').resolve(__dirname, '..', '.env');
-require('dotenv').config({ path: ENV_PATH });
+const EP = require('path').resolve(__dirname, '..', '.env');
+require('dotenv').config({ path: EP });
 
-const blessed = require('blessed');
-const AdmZip  = require('adm-zip');
-const fs      = require('fs');
-const path    = require('path');
+const blessed    = require('blessed');
+const AdmZip     = require('adm-zip');
+const fs         = require('fs');
+const path       = require('path');
 const { spawnSync } = require('child_process');
 
 const SL = path.join(__dirname, 'leveldat.js');
 
-let MC_ROOT  = process.env.MC_ROOT  || '/opt/minecraft-bedrock-server';
-let DL_DIR   = process.env.DL_DIR   || path.join(__dirname, '..', 'resources');
-let TEMP_DIR = process.env.TEMP_DIR || '/tmp/mc_addon_install';
-let MOVE_TO_INSTALLED = (process.env.MOVE_TO_INSTALLED || 'true') !== 'false';
+let D_BP  = process.env.CarpetaBP        || '';
+let D_RP  = process.env.CarpetaRP        || '';
+let D_WO  = process.env.CarpetaMundos    || '';
+let D_RES = process.env.CarpetaRecursos  || path.join(__dirname, '..', 'resources');
+let D_INS = process.env.CarpetaInstalados|| path.join(__dirname, '..', 'Instalados');
+let D_TMP = process.env.TEMP_DIR         || '/tmp/mc_addon_install';
 
 const screen = blessed.screen({ smartCSR: true, title: 'MC Addon Manager' });
 
@@ -22,61 +24,50 @@ let worldName   = null;
 let worldBPJson = null;
 let worldRPJson = null;
 
-const getDirs = () => {
-  const wBase = process.env.WORLDS_DIR ||
-    ['worlds', 'minecraftWorlds'].map(d => path.join(MC_ROOT, d)).find(fs.existsSync) ||
-    path.join(MC_ROOT, 'worlds');
-  return {
-    BP:     process.env.BP_DIR || path.join(MC_ROOT, 'behavior_packs'),
-    RP:     process.env.RP_DIR || path.join(MC_ROOT, 'resource_packs'),
-    WORLDS: wBase,
-  };
-};
+const getDirs = () => ({ BP: D_BP, RP: D_RP, WORLDS: D_WO });
 
-function upsertEnv(key, value) {
-  let src = '';
-  try { src = fs.readFileSync(ENV_PATH, 'utf8'); } catch {}
-  const re = new RegExp('^' + key + '=.*$', 'm');
-  const line = key + '=' + value;
-  src = re.test(src) ? src.replace(re, line) : src + (src && !src.endsWith('\n') ? '\n' : '') + line + '\n';
-  fs.writeFileSync(ENV_PATH, src);
-  process.env[key] = value;
+function upsertEnv(k, v) {
+  let s = '';
+  try { s = fs.readFileSync(EP, 'utf8'); } catch {}
+  const re = new RegExp('^' + k + '=.*$', 'm');
+  const ln = k + '=' + v;
+  s = re.test(s) ? s.replace(re, ln) : s + (s && !s.endsWith('\n') ? '\n' : '') + ln + '\n';
+  fs.writeFileSync(EP, s);
+  process.env[k] = v;
 }
 
-const ROUTE_VARS = [
-  { key: 'MC_ROOT',    get: () => MC_ROOT,               set: v => { MC_ROOT  = v; }, optional: false,
-    title: 'Selecciona MC_ROOT (servidor Minecraft)',     default: '/opt/minecraft-bedrock-server' },
-  { key: 'BP_DIR',     get: () => process.env.BP_DIR,    set: () => {}, optional: true,
-    title: 'Selecciona BP_DIR (behavior_packs)',          default: null },
-  { key: 'RP_DIR',     get: () => process.env.RP_DIR,    set: () => {}, optional: true,
-    title: 'Selecciona RP_DIR (resource_packs)',          default: null },
-  { key: 'WORLDS_DIR', get: () => process.env.WORLDS_DIR,set: () => {}, optional: true,
-    title: 'Selecciona WORLDS_DIR (mundos)',              default: null },
+const RV = [
+  { key: 'CarpetaBP',       get: () => D_BP,  set: v => { D_BP  = v; }, optional: false,
+    title: 'Selecciona CarpetaBP (behavior_packs)',   default: '/opt/minecraft-bedrock-server/behavior_packs' },
+  { key: 'CarpetaRP',       get: () => D_RP,  set: v => { D_RP  = v; }, optional: false,
+    title: 'Selecciona CarpetaRP (resource_packs)',   default: '/opt/minecraft-bedrock-server/resource_packs' },
+  { key: 'CarpetaMundos',   get: () => D_WO,  set: v => { D_WO  = v; }, optional: false,
+    title: 'Selecciona CarpetaMundos (worlds)',        default: '/opt/minecraft-bedrock-server/worlds' },
+  { key: 'CarpetaRecursos', get: () => D_RES, set: v => { D_RES = v; }, optional: false,
+    title: 'Selecciona CarpetaRecursos (fuente)',      default: path.join(__dirname, '..', 'resources') },
+  { key: 'CarpetaInstalados',get: () => D_INS,set: v => { D_INS = v; }, optional: false,
+    title: 'Selecciona CarpetaInstalados (destino)',   default: path.join(__dirname, '..', 'Instalados') },
 ];
 
-function needsPicker(entry) {
-  const val = entry.get();
-  if (entry.optional) return val && !fs.existsSync(val);
-  return !val || !fs.existsSync(val);
+function needsPicker(e) {
+  const v = e.get();
+  if (e.optional) return v && !fs.existsSync(v);
+  return !v || !fs.existsSync(v);
 }
 
 function runValidation(vars, idx, onDone) {
   if (idx >= vars.length) return onDone();
-  const entry = vars[idx];
-  if (!needsPicker(entry)) return runValidation(vars, idx + 1, onDone);
-  const start = entry.get() || entry.default || '/';
+  const e = vars[idx];
+  if (!needsPicker(e)) return runValidation(vars, idx + 1, onDone);
+  const st = e.get() || e.default || '/';
   showFilePicker(
-    entry.title,
-    fs.existsSync(start) ? start : '/',
-    (selected) => {
-      entry.set(selected);
-      upsertEnv(entry.key, selected);
-      runValidation(vars, idx + 1, onDone);
-    },
+    e.title,
+    fs.existsSync(st) ? st : '/',
+    (sel) => { e.set(sel); upsertEnv(e.key, sel); runValidation(vars, idx + 1, onDone); },
     () => {
-      if (!entry.optional) {
+      if (!e.optional) {
         screen.destroy();
-        process.stderr.write('Ruta requerida no configurada: ' + entry.key + '\n');
+        process.stderr.write('Ruta requerida no configurada: ' + e.key + '\n');
         process.exit(1);
       }
       runValidation(vars, idx + 1, onDone);
@@ -94,23 +85,19 @@ function writeJson(p, data) {
 }
 
 function dirSize(dir) {
-  let bytes = 0;
-  const walk = (d) => {
+  let b = 0;
+  const wk = (d) => {
     try {
       for (const f of fs.readdirSync(d)) {
-        const full = path.join(d, f);
-        try {
-          const st = fs.statSync(full);
-          if (st.isDirectory()) walk(full);
-          else bytes += st.size;
-        } catch {}
+        const fl = path.join(d, f);
+        try { const st = fs.statSync(fl); if (st.isDirectory()) wk(fl); else b += st.size; } catch {}
       }
     } catch {}
   };
-  walk(dir);
-  if (bytes < 1024)        return bytes + ' B';
-  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
-  return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+  wk(dir);
+  if (b < 1024)        return b + ' B';
+  if (b < 1024 * 1024) return (b / 1024).toFixed(1) + ' KB';
+  return (b / (1024 * 1024)).toFixed(1) + ' MB';
 }
 
 function parseVer(v) {
@@ -137,17 +124,15 @@ function parseLang(p) {
   } catch { return null; }
 }
 
-function readLangTexts(packDir) {
-  const td = path.join(packDir, 'texts');
+function readLangTexts(pd) {
+  const td = path.join(pd, 'texts');
   if (!fs.existsSync(td)) return null;
   let files;
   try { files = fs.readdirSync(td).filter(f => f.endsWith('.lang')); } catch { return null; }
   if (!files.length) return null;
-  const pick = (fn) => files.find(fn) || null;
-  const chosen = pick(f => /^es_/i.test(f))
-    || pick(f => /^en_/i.test(f))
-    || files[0];
-  return parseLang(path.join(td, chosen));
+  const pk = (fn) => files.find(fn) || null;
+  const ch = pk(f => /^es_/i.test(f)) || pk(f => /^en_/i.test(f)) || files[0];
+  return parseLang(path.join(td, ch));
 }
 
 function sanitizeName(s) {
@@ -160,28 +145,25 @@ function sanitizePath(s) {
 
 function parseManifestInfo(m) {
   const h   = m.header || {};
-  const name = stripCodes(h.name);
-  const desc = stripCodes(h.description);
-  const ver  = parseVer(h.version);
-  const minEng = parseVer(h.min_engine_version);
-  const authors = (m.metadata?.authors || []).join(', ');
-  const caps = (m.capabilities || []).join(', ');
-  const subpacks = (m.subpacks || []).map(s => s.name ? stripCodes(s.name) : s.folder_name);
-
-  const depPacks   = [];
-  const depModules = [];
+  const nm  = stripCodes(h.name);
+  const dc  = stripCodes(h.description);
+  const vr  = parseVer(h.version);
+  const me  = parseVer(h.min_engine_version);
+  const au  = (m.metadata?.authors || []).join(', ');
+  const cp  = (m.capabilities || []).join(', ');
+  const sp  = (m.subpacks || []).map(s => s.name ? stripCodes(s.name) : s.folder_name);
+  const dp  = [], dm = [];
   for (const d of (m.dependencies || [])) {
-    if (d.module_name) depModules.push(d.module_name + ' ' + parseVer(d.version));
-    else if (d.uuid)   depPacks.push(d.uuid + ' v' + parseVer(d.version));
+    if (d.module_name) dm.push(d.module_name + ' ' + parseVer(d.version));
+    else if (d.uuid)   dp.push(d.uuid + ' v' + parseVer(d.version));
   }
-
-  return { name, desc, ver, minEng, authors, caps, subpacks, depPacks, depModules,
-           uuid: h.uuid, formatVersion: m.format_version };
+  return { name: nm, desc: dc, ver: vr, minEng: me, authors: au, caps: cp,
+           subpacks: sp, depPacks: dp, depModules: dm, uuid: h.uuid, formatVersion: m.format_version };
 }
 
-function detectPackType(manifest) {
-  const types = (manifest.modules || []).map(m => m.type);
-  if (types.includes('resources')) return 'RP';
+function detectPackType(m) {
+  const t = (m.modules || []).map(x => x.type);
+  if (t.includes('resources')) return 'RP';
   return 'BP';
 }
 
@@ -195,10 +177,10 @@ function cmpVer(a, b) {
   return 0;
 }
 
-function isNativePack(packDir, m) {
-  if (!fs.existsSync(path.join(packDir, 'pack_icon.png'))) return true;
-  const ver = m.header.version || [];
-  if (ver[0] === 0 && ver[1] === 0 && ver[2] === 1) return true;
+function isNativePack(pd, m) {
+  if (!fs.existsSync(path.join(pd, 'pack_icon.png'))) return true;
+  const v = m.header.version || [];
+  if (v[0] === 0 && v[1] === 0 && v[2] === 1) return true;
   if ((m.header.name || '').includes('@minecraft')) return true;
   return false;
 }
@@ -207,30 +189,30 @@ function scanPackDir(dir, hideNative) {
   const packs = {};
   if (!fs.existsSync(dir)) return packs;
   for (const folder of fs.readdirSync(dir)) {
-    const packDir = path.join(dir, folder);
-    const mp = path.join(packDir, 'manifest.json');
+    const pd = path.join(dir, folder);
+    const mp = path.join(pd, 'manifest.json');
     if (!fs.existsSync(mp)) continue;
     const m = readJson(mp);
     if (!m?.header?.uuid) continue;
-    if (hideNative && isNativePack(packDir, m)) continue;
+    if (hideNative && isNativePack(pd, m)) continue;
     const uuid = m.header.uuid;
     const info = parseManifestInfo(m);
-    const ver  = info.ver;
-    const nameIsGeneric = !info.name || m.header.name?.startsWith('pack.');
-    const descIsGeneric = !info.desc || m.header.description?.startsWith('pack.');
-    let rname = nameIsGeneric ? null : info.name;
-    let rdesc = descIsGeneric ? null : info.desc;
-    if (nameIsGeneric || descIsGeneric) {
-      const lt = readLangTexts(packDir);
+    const vr   = info.ver;
+    const ng   = !info.name || m.header.name?.startsWith('pack.');
+    const dg   = !info.desc || m.header.description?.startsWith('pack.');
+    let rn = ng ? null : info.name;
+    let rd = dg ? null : info.desc;
+    if (ng || dg) {
+      const lt = readLangTexts(pd);
       if (lt) {
-        if (nameIsGeneric && lt['pack.name']) rname = stripCodes(lt['pack.name']);
-        if (descIsGeneric && lt['pack.description']) rdesc = stripCodes(lt['pack.description']);
+        if (ng && lt['pack.name'])        rn = stripCodes(lt['pack.name']);
+        if (dg && lt['pack.description']) rd = stripCodes(lt['pack.description']);
       }
     }
-    const name = rname || folder;
-    const desc = rdesc || info.desc;
-    if (packs[uuid] && cmpVer(ver, packs[uuid].version) <= 0) continue;
-    packs[uuid] = { uuid, name, desc, version: ver, type: detectPackType(m),
+    const nm = rn || folder;
+    const dc = rd || info.desc;
+    if (packs[uuid] && cmpVer(vr, packs[uuid].version) <= 0) continue;
+    packs[uuid] = { uuid, name: nm, desc: dc, version: vr, type: detectPackType(m),
       deps: (m.dependencies || []).map(d => d.uuid).filter(Boolean), folder, dir, manifest: m };
   }
   return packs;
@@ -238,30 +220,22 @@ function scanPackDir(dir, hideNative) {
 
 function buildAddonGroups(bpPacks, rpPacks) {
   const groups = {};
-  const addToGroup = (key, pack) => {
+  const add = (key, pack) => {
     if (!groups[key]) groups[key] = { name: pack.name, desc: pack.desc, bp: null, rp: null };
     if (pack.type === 'BP') groups[key].bp = pack;
     else groups[key].rp = pack;
   };
-  const linked = new Set();
+  const lk = new Set();
   for (const [uuid, pack] of Object.entries(bpPacks)) {
-    const rpDep = pack.deps.find(d => rpPacks[d]);
-    if (rpDep) {
-      linked.add(uuid); linked.add(rpDep);
-      addToGroup(uuid, pack); addToGroup(uuid, rpPacks[rpDep]);
-    }
+    const rd = pack.deps.find(d => rpPacks[d]);
+    if (rd) { lk.add(uuid); lk.add(rd); add(uuid, pack); add(uuid, rpPacks[rd]); }
   }
   for (const [uuid, pack] of Object.entries(rpPacks)) {
-    const bpDep = pack.deps.find(d => bpPacks[d]);
-    if (bpDep && !linked.has(uuid)) {
-      linked.add(uuid); linked.add(bpDep);
-      addToGroup(bpDep, bpPacks[bpDep]); addToGroup(bpDep, pack);
-    }
+    const bd = pack.deps.find(d => bpPacks[d]);
+    if (bd && !lk.has(uuid)) { lk.add(uuid); lk.add(bd); add(bd, bpPacks[bd]); add(bd, pack); }
   }
-  for (const [uuid, pack] of Object.entries(bpPacks))
-    if (!linked.has(uuid)) addToGroup('bp_' + uuid, pack);
-  for (const [uuid, pack] of Object.entries(rpPacks))
-    if (!linked.has(uuid)) addToGroup('rp_' + uuid, pack);
+  for (const [uuid, pack] of Object.entries(bpPacks)) if (!lk.has(uuid)) add('bp_' + uuid, pack);
+  for (const [uuid, pack] of Object.entries(rpPacks)) if (!lk.has(uuid)) add('rp_' + uuid, pack);
   return groups;
 }
 
@@ -314,13 +288,15 @@ function deleteGroup(g) {
   if (g.rp) rmrf(path.join(RP, g.rp.folder));
 }
 
-function getMCOwner() {
-  const stat = fs.statSync(MC_ROOT);
-  return { uid: stat.uid, gid: stat.gid };
+function getOwnerOf(dir) {
+  const st = fs.statSync(dir);
+  return { uid: st.uid, gid: st.gid };
 }
 
 function checkOwnership(installedPaths) {
-  const { uid, gid } = getMCOwner();
+  const ref = installedPaths.find(p => fs.existsSync(path.dirname(p)));
+  if (!ref) return false;
+  const { uid, gid } = getOwnerOf(path.dirname(ref));
   return installedPaths.some(p => {
     if (!fs.existsSync(p)) return false;
     const s = fs.statSync(p);
@@ -329,15 +305,17 @@ function checkOwnership(installedPaths) {
 }
 
 function fixOwnership(installedPaths) {
-  const { uid, gid } = getMCOwner();
+  const ref = installedPaths.find(p => fs.existsSync(path.dirname(p)));
+  if (!ref) return;
+  const { uid, gid } = getOwnerOf(path.dirname(ref));
   screen.program.disableMouse();
   screen.program.showCursor();
   screen.program.normalBuffer();
   process.stdout.write('\n');
   for (const p of installedPaths) {
     if (!fs.existsSync(p)) continue;
-    const result = spawnSync('sudo', ['chown', '-R', `${uid}:${gid}`, p], { stdio: 'inherit' });
-    if (result.status !== 0) process.stdout.write('Error chown: ' + p + '\n');
+    const r = spawnSync('sudo', ['chown', '-R', `${uid}:${gid}`, p], { stdio: 'inherit' });
+    if (r.status !== 0) process.stdout.write('Error chown: ' + p + '\n');
   }
   screen.program.enableMouse();
   screen.program.hideCursor();
@@ -360,57 +338,57 @@ function showWait(label, fn) {
 
 function extractToTemp(file) {
   const base = sanitizePath(path.basename(file).replace(/\.[^.]+$/, ''));
-  const dest = path.join(TEMP_DIR, base);
+  const dest = path.join(D_TMP, base);
   fs.mkdirSync(dest, { recursive: true });
   new AdmZip(file).extractAllTo(dest, true);
   return dest;
 }
 
 function findManifests(dir) {
-  const results = [];
-  const walk = (d, depth) => {
+  const r = [];
+  const wk = (d, depth) => {
     if (depth > 4) return;
-    for (const entry of fs.readdirSync(d)) {
-      const full = path.join(d, entry);
-      if (fs.statSync(full).isDirectory()) walk(full, depth + 1);
-      else if (entry === 'manifest.json') results.push(full);
+    for (const e of fs.readdirSync(d)) {
+      const fl = path.join(d, e);
+      if (fs.statSync(fl).isDirectory()) wk(fl, depth + 1);
+      else if (e === 'manifest.json') r.push(fl);
     }
   };
-  walk(dir, 0);
-  return results;
+  wk(dir, 0);
+  return r;
 }
 
 function extractNested(dir, onFile) {
   let found = true;
   while (found) {
     found = false;
-    const walk = (d) => {
-      for (const entry of fs.readdirSync(d)) {
-        const full = path.join(d, entry);
-        if (fs.statSync(full).isDirectory()) { walk(full); continue; }
-        if (/\.(mcpack|mcaddon|zip)$/.test(entry)) {
+    const wk = (d) => {
+      for (const e of fs.readdirSync(d)) {
+        const fl = path.join(d, e);
+        if (fs.statSync(fl).isDirectory()) { wk(fl); continue; }
+        if (/\.(mcpack|mcaddon|zip)$/.test(e)) {
           found = true;
-          if (onFile) onFile(entry);
-          const dest = path.join(d, sanitizePath(path.basename(entry).replace(/\.[^.]+$/, '')));
+          if (onFile) onFile(e);
+          const dest = path.join(d, sanitizePath(path.basename(e).replace(/\.[^.]+$/, '')));
           fs.mkdirSync(dest, { recursive: true });
-          try { new AdmZip(full).extractAllTo(dest, true); } catch {}
-          fs.unlinkSync(full);
+          try { new AdmZip(fl).extractAllTo(dest, true); } catch {}
+          fs.unlinkSync(fl);
         }
       }
     };
-    walk(dir);
+    wk(dir);
   }
 }
 
 function scanDownloads() {
   const entries = [];
-  if (!fs.existsSync(DL_DIR)) return entries;
-  for (const f of fs.readdirSync(DL_DIR)) {
-    const full = path.join(DL_DIR, f);
+  if (!fs.existsSync(D_RES)) return entries;
+  for (const f of fs.readdirSync(D_RES)) {
+    const fl = path.join(D_RES, f);
     if (/\.(mcpack|mcaddon|zip)$/.test(f))
-      entries.push({ full, isDir: false });
-    else if (fs.statSync(full).isDirectory())
-      entries.push({ full, isDir: true });
+      entries.push({ full: fl, isDir: false });
+    else if (fs.statSync(fl).isDirectory())
+      entries.push({ full: fl, isDir: true });
   }
   return entries;
 }
@@ -420,52 +398,41 @@ function buildInstallPreview(bpPacks, rpPacks) {
   const entries = scanDownloads();
   if (entries.length === 0) return { items: [], files: [] };
 
-  if (fs.existsSync(TEMP_DIR)) fs.rmSync(TEMP_DIR, { recursive: true });
-  fs.mkdirSync(TEMP_DIR, { recursive: true });
+  if (fs.existsSync(D_TMP)) fs.rmSync(D_TMP, { recursive: true });
+  fs.mkdirSync(D_TMP, { recursive: true });
 
-  const preview = [];
-  const sourceFiles = [];
+  const preview = [], srcFiles = [];
 
   for (const entry of entries) {
     try {
-      let scanDir;
-      if (entry.isDir) {
-        scanDir = entry.full;
-      } else {
-        scanDir = extractToTemp(entry.full);
-        extractNested(scanDir, () => {});
-      }
+      let sd;
+      if (entry.isDir) { sd = entry.full; }
+      else { sd = extractToTemp(entry.full); extractNested(sd, () => {}); }
 
-      for (const mp of findManifests(scanDir)) {
+      for (const mp of findManifests(sd)) {
         const m = readJson(mp);
         if (!m?.header?.uuid) continue;
-        const type    = detectPackType(m);
-        const uuid    = m.header.uuid;
-        const rawName = m.header.name || '';
-        const packRootDir = path.dirname(mp);
-        let rname = (!rawName || rawName.startsWith('pack.')) ? null : stripCodes(rawName);
-        if (!rname) {
-          const lt = readLangTexts(packRootDir);
-          if (lt?.['pack.name']) rname = stripCodes(lt['pack.name']);
-        }
-        const name    = sanitizeName(rname || path.basename(packRootDir));
-        const newVer  = parseVer(m.header.version);
-        const existing = type === 'BP' ? bpPacks[uuid] : rpPacks[uuid];
-        const downgrade = existing ? cmpVer(newVer, existing.version) < 0 : false;
-        preview.push({ file: path.basename(entry.full), name, uuid, type, newVer, isDir: entry.isDir, downgrade,
-          existing: existing ? { name: existing.name, version: existing.version, folder: existing.folder } : null,
-          packRoot: packRootDir });
+        const tp    = detectPackType(m);
+        const uuid  = m.header.uuid;
+        const rn    = m.header.name || '';
+        const prd   = path.dirname(mp);
+        let nm = (!rn || rn.startsWith('pack.')) ? null : stripCodes(rn);
+        if (!nm) { const lt = readLangTexts(prd); if (lt?.['pack.name']) nm = stripCodes(lt['pack.name']); }
+        const name = sanitizeName(nm || path.basename(prd));
+        const nv   = parseVer(m.header.version);
+        const ex   = tp === 'BP' ? bpPacks[uuid] : rpPacks[uuid];
+        const dg   = ex ? cmpVer(nv, ex.version) < 0 : false;
+        preview.push({ file: path.basename(entry.full), name, uuid, type: tp, newVer: nv,
+          isDir: entry.isDir, downgrade: dg,
+          existing: ex ? { name: ex.name, version: ex.version, folder: ex.folder } : null,
+          packRoot: prd });
       }
-      sourceFiles.push(entry);
-
-      if (!entry.isDir) {
-        if (fs.existsSync(scanDir)) fs.rmSync(scanDir, { recursive: true });
-      }
-
+      srcFiles.push(entry);
+      if (!entry.isDir && fs.existsSync(sd)) fs.rmSync(sd, { recursive: true });
     } catch {}
   }
 
-  return { items: preview, files: sourceFiles };
+  return { items: preview, files: srcFiles };
 }
 
 function doInstall(preview, sourceFiles) {
@@ -474,71 +441,62 @@ function doInstall(preview, sourceFiles) {
 
   const needsTmp = preview.some(p => !p.downgrade && !p.isDir);
   if (needsTmp) {
-    if (fs.existsSync(TEMP_DIR)) fs.rmSync(TEMP_DIR, { recursive: true });
-    fs.mkdirSync(TEMP_DIR, { recursive: true });
+    if (fs.existsSync(D_TMP)) fs.rmSync(D_TMP, { recursive: true });
+    fs.mkdirSync(D_TMP, { recursive: true });
   }
 
-  const reExtracted = new Map();
+  const reEx = new Map();
 
   for (const p of preview) {
     if (p.downgrade) continue;
-
-    const destBase = p.type === 'BP' ? BP : RP;
-    const existingFolder = p.existing?.folder;
-    let baseName = existingFolder || sanitizeName(p.name);
-    if (!baseName) {
+    const dBase = p.type === 'BP' ? BP : RP;
+    const ef    = p.existing?.folder;
+    let bName   = ef || sanitizeName(p.name);
+    if (!bName) {
       let n = 1;
-      while (fs.existsSync(path.join(destBase, 'pack' + n))) n++;
-      baseName = 'pack' + n;
+      while (fs.existsSync(path.join(dBase, 'pack' + n))) n++;
+      bName = 'pack' + n;
     }
-    const dest = path.join(destBase, baseName);
+    const dest = path.join(dBase, bName);
 
+    let pr = p.packRoot;
 
-    let packRoot = p.packRoot;
-
-    if (!p.isDir && !fs.existsSync(packRoot)) {
-      const srcFile = path.join(DL_DIR, p.file);
-      const cacheKey = p.file;
-      if (!reExtracted.has(cacheKey)) {
-        if (fs.existsSync(srcFile)) {
-          const tmpDest = extractToTemp(srcFile);
-          extractNested(tmpDest, () => {});
-          reExtracted.set(cacheKey, tmpDest);
+    if (!p.isDir && !fs.existsSync(pr)) {
+      const sf = path.join(D_RES, p.file);
+      const ck = p.file;
+      if (!reEx.has(ck)) {
+        if (fs.existsSync(sf)) {
+          const td = extractToTemp(sf);
+          extractNested(td, () => {});
+          reEx.set(ck, td);
         }
       }
-      const base = reExtracted.get(cacheKey);
+      const base = reEx.get(ck);
       if (base) {
-        const manifests = findManifests(base);
-        const match = manifests.find(mp => {
-          const m = readJson(mp);
-          return m?.header?.uuid === p.uuid;
-        });
-        if (match) packRoot = path.dirname(match);
+        const mfs = findManifests(base);
+        const mt  = mfs.find(mp => { const m = readJson(mp); return m?.header?.uuid === p.uuid; });
+        if (mt) pr = path.dirname(mt);
       }
     }
 
-    if (!fs.existsSync(packRoot)) continue;
-
+    if (!fs.existsSync(pr)) continue;
     if (fs.existsSync(dest)) fs.rmSync(dest, { recursive: true });
-    fs.cpSync(packRoot, dest, { recursive: true });
+    fs.cpSync(pr, dest, { recursive: true });
     installed.push(dest);
   }
 
-  if (fs.existsSync(TEMP_DIR)) fs.rmSync(TEMP_DIR, { recursive: true });
+  if (fs.existsSync(D_TMP)) fs.rmSync(D_TMP, { recursive: true });
 
-  if (MOVE_TO_INSTALLED) {
-    const doneDir = path.join('Instalados');
-    fs.mkdirSync(doneDir, { recursive: true });
-    const moved = new Set();
-    for (const entry of sourceFiles) {
-      if (moved.has(entry.full)) continue;
-      moved.add(entry.full);
-      const dst = path.join(doneDir, path.basename(entry.full));
-      try {
-        if (fs.existsSync(dst)) { entry.isDir ? fs.rmSync(dst, { recursive: true }) : fs.unlinkSync(dst); }
-        fs.renameSync(entry.full, dst);
-      } catch {}
-    }
+  fs.mkdirSync(D_INS, { recursive: true });
+  const moved = new Set();
+  for (const entry of sourceFiles) {
+    if (moved.has(entry.full)) continue;
+    moved.add(entry.full);
+    const dst = path.join(D_INS, path.basename(entry.full));
+    try {
+      if (fs.existsSync(dst)) { entry.isDir ? fs.rmSync(dst, { recursive: true }) : fs.unlinkSync(dst); }
+      fs.renameSync(entry.full, dst);
+    } catch {}
   }
 
   return installed;
@@ -553,17 +511,17 @@ function showConfirmModal(msg, onYes, onNo) {
   });
   screen.append(box);
   screen.render();
-  const cleanup = () => { box.detach(); screen.render(); };
+  const cl = () => { box.detach(); screen.render(); };
   screen.removeAllListeners('keypress');
-  screen.key(['s', 'S'], () => { cleanup(); onYes(); });
-  screen.key(['n', 'N', 'escape'], () => { cleanup(); onNo(); });
+  screen.key(['s', 'S'], () => { cl(); onYes(); });
+  screen.key(['n', 'N', 'escape'], () => { cl(); onNo(); });
 }
 
 function showFilePicker(title, startPath, onSelect, onCancel) {
   screen.children.slice().forEach(c => c.detach());
   screen.removeAllListeners('keypress');
 
-  let currentPath = startPath;
+  let cp = startPath;
 
   const header = blessed.box({
     top: 0, left: 0, width: '100%', height: 3, tags: true,
@@ -571,9 +529,8 @@ function showFilePicker(title, startPath, onSelect, onCancel) {
     style: { bg: 'black', fg: 'white' },
   });
 
-  const breadcrumb = blessed.box({
-    top: 3, left: 0, width: '100%', height: 1,
-    tags: true,
+  const bc = blessed.box({
+    top: 3, left: 0, width: '100%', height: 1, tags: true,
     style: { bg: 'blue', fg: 'white' },
   });
 
@@ -584,46 +541,33 @@ function showFilePicker(title, startPath, onSelect, onCancel) {
     style: { selected: { bg: 'blue', fg: 'white' }, item: { fg: 'white' } },
   });
 
-  const refresh = () => {
-    breadcrumb.setContent(' ' + currentPath);
+  const rf = () => {
+    bc.setContent(' ' + cp);
     let entries = [];
     try {
-      entries = fs.readdirSync(currentPath)
-        .map(f => {
-          const full = path.join(currentPath, f);
-          const isDir = fs.statSync(full).isDirectory();
-          return { name: f, isDir };
-        })
-        .sort((a, b) => {
-          if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
-          return a.name.localeCompare(b.name);
-        });
+      entries = fs.readdirSync(cp)
+        .map(f => { const fl = path.join(cp, f); const id = fs.statSync(fl).isDirectory(); return { name: f, isDir: id }; })
+        .sort((a, b) => { if (a.isDir !== b.isDir) return a.isDir ? -1 : 1; return a.name.localeCompare(b.name); });
     } catch {}
     list.setItems(entries.map(e => e.isDir ? '{cyan-fg}' + e.name + '/{/}' : e.name));
     list._dirEntries = entries;
     screen.render();
   };
 
-  refresh();
+  rf();
 
   screen.key(['l'], () => {
     const idx = list.selected;
-    const entries = list._dirEntries || [];
-    if (!entries[idx]) return;
-    const entry = entries[idx];
-    if (entry.isDir) { currentPath = path.join(currentPath, entry.name); refresh(); }
+    const e = (list._dirEntries || [])[idx];
+    if (e?.isDir) { cp = path.join(cp, e.name); rf(); }
   });
 
-  screen.key(['h'], () => {
-    const parent = path.dirname(currentPath);
-    if (parent !== currentPath) { currentPath = parent; refresh(); }
-  });
-
-  screen.key('enter', () => onSelect(currentPath));
+  screen.key(['h'], () => { const p = path.dirname(cp); if (p !== cp) { cp = p; rf(); } });
+  screen.key('enter', () => onSelect(cp));
   screen.key('escape', () => onCancel());
 
   screen.append(header);
-  screen.append(breadcrumb);
+  screen.append(bc);
   screen.append(list);
   list.focus();
   screen.render();
@@ -633,18 +577,18 @@ function showDetailModal(group, onClose) {
   const lines = [];
   const addPack = (pack, label) => {
     if (!pack) return;
-    const m = pack.manifest || readJson(path.join(pack.dir, pack.folder, 'manifest.json'));
+    const m  = pack.manifest || readJson(path.join(pack.dir, pack.folder, 'manifest.json'));
     if (!m) return;
-    const i = parseManifestInfo(m);
-    const packDir = path.join(pack.dir, pack.folder);
-    const lt = readLangTexts(packDir);
-    const nameIsGeneric = !i.name || m.header?.name?.startsWith('pack.');
-    const descIsGeneric = !i.desc || m.header?.description?.startsWith('pack.');
-    const dname = (nameIsGeneric && lt?.['pack.name']) ? stripCodes(lt['pack.name']) : (i.name || pack.folder);
-    const ddesc = (descIsGeneric && lt?.['pack.description']) ? stripCodes(lt['pack.description']) : (i.desc || '');
+    const i  = parseManifestInfo(m);
+    const pd = path.join(pack.dir, pack.folder);
+    const lt = readLangTexts(pd);
+    const ng = !i.name || m.header?.name?.startsWith('pack.');
+    const dg = !i.desc || m.header?.description?.startsWith('pack.');
+    const dn = (ng && lt?.['pack.name'])        ? stripCodes(lt['pack.name'])        : (i.name || pack.folder);
+    const dd = (dg && lt?.['pack.description']) ? stripCodes(lt['pack.description']) : (i.desc || '');
     lines.push('{cyan-fg}{bold}── ' + label + ' ──{/}');
-    lines.push('{white-fg}Nombre:{/}       ' + dname);
-    lines.push('{white-fg}Descripcion:{/}  ' + (ddesc || 'pack.description'));
+    lines.push('{white-fg}Nombre:{/}       ' + dn);
+    lines.push('{white-fg}Descripcion:{/}  ' + (dd || 'pack.description'));
     lines.push('{white-fg}Version:{/}      ' + i.ver);
     lines.push('{white-fg}Motor minimo:{/} ' + i.minEng);
     lines.push('{white-fg}UUID:{/}         {gray-fg}' + i.uuid + '{/}');
@@ -654,7 +598,7 @@ function showDetailModal(group, onClose) {
     if (i.depModules.length) lines.push('{white-fg}Modulos:{/}      ' + i.depModules.join('  |  '));
     if (i.depPacks.length)   lines.push('{white-fg}Deps (packs):{/} ' + i.depPacks.join('\n              '));
     if (i.subpacks.length)   lines.push('{white-fg}Subpacks:{/}     ' + i.subpacks.join(', '));
-    const td = path.join(packDir, 'texts');
+    const td = path.join(pd, 'texts');
     if (fs.existsSync(td))   lines.push('{white-fg}Textos:{/}       {gray-fg}' + td + '{/}');
     lines.push('');
   };
@@ -662,10 +606,9 @@ function showDetailModal(group, onClose) {
   addPack(group.bp, 'Behavior Pack');
   addPack(group.rp, 'Resource Pack');
 
-  const modalH = Math.min(lines.length + 4, screen.height - 4);
+  const mh = Math.min(lines.length + 4, screen.height - 4);
   const modal = blessed.box({
-    top: 'center', left: 'center',
-    width: '70%', height: modalH,
+    top: 'center', left: 'center', width: '70%', height: mh,
     border: { type: 'line' },
     label: ' {cyan-fg}Detalles — Esc para cerrar{/} ',
     tags: true, scrollable: true, scrollbar: { ch: '|' },
@@ -678,8 +621,8 @@ function showDetailModal(group, onClose) {
   modal.focus();
   screen.render();
 
-  const close = () => { modal.detach(); onClose(); };
-  modal.key(['escape', 'q'], close);
+  const cl = () => { modal.detach(); onClose(); };
+  modal.key(['escape', 'q'], cl);
   modal.key(['C-c'], () => process.exit(0));
 }
 
@@ -691,18 +634,17 @@ function showWorldScreen() {
   let showNoIcon = false;
 
   const rebuild = () => {
-    const bpPacks = scanPackDir(BP, !showNoIcon);
-    const rpPacks = scanPackDir(RP, !showNoIcon);
-    const groups  = buildAddonGroups(bpPacks, rpPacks);
-    const bpPath  = path.join(WORLDS, worldName, 'world_behavior_packs.json');
-    const rpPath  = path.join(WORLDS, worldName, 'world_resource_packs.json');
-    worldBPJson   = readJson(bpPath) || [];
-    worldRPJson   = readJson(rpPath) || [];
-    return { bpPacks, rpPacks, groups };
+    const bp = scanPackDir(BP, !showNoIcon);
+    const rp = scanPackDir(RP, !showNoIcon);
+    const gr = buildAddonGroups(bp, rp);
+    const bpp = path.join(WORLDS, worldName, 'world_behavior_packs.json');
+    const rpp = path.join(WORLDS, worldName, 'world_resource_packs.json');
+    worldBPJson = readJson(bpp) || [];
+    worldRPJson = readJson(rpp) || [];
+    return { bpPacks: bp, rpPacks: rp, groups: gr };
   };
 
   let { bpPacks, rpPacks, groups } = rebuild();
-
   let entries = Object.entries(groups);
 
   const header = blessed.box({
@@ -712,8 +654,8 @@ function showWorldScreen() {
   });
 
   const updateHeader = () => {
-    const oLabel = showNoIcon ? '{yellow-fg}[O] Ocultar sin icono{/}' : '{white-fg}[O] Mostrar sin icono{/}';
-    header.setContent(' World: {bold}' + worldName + '{/}  |  {cyan-fg}Enter{/} toggle  {cyan-fg}M{/} detalles  {cyan-fg}D{/} desinstalar  {cyan-fg}I{/} instalar  {cyan-fg}E{/} editar world  {cyan-fg}P{/} rutas  ' + oLabel + '  {cyan-fg}Q{/} salir');
+    const ol = showNoIcon ? '{yellow-fg}[O] Ocultar sin icono{/}' : '{white-fg}[O] Mostrar sin icono{/}';
+    header.setContent(' World: {bold}' + worldName + '{/}  |  {cyan-fg}Enter{/} toggle  {cyan-fg}M{/} detalles  {cyan-fg}D{/} desinstalar  {cyan-fg}I{/} instalar  {cyan-fg}E{/} editar world  {cyan-fg}P{/} rutas  ' + ol + '  {cyan-fg}Q{/} salir');
     screen.render();
   };
 
@@ -727,15 +669,15 @@ function showWorldScreen() {
   const buildItems = () => {
     const { BP, RP } = getDirs();
     return entries.map(([, g]) => {
-      const active  = (g.bp && isActive(g.bp.uuid)) || (g.rp && isActive(g.rp.uuid));
-      const tags    = [g.bp ? 'BP' : null, g.rp ? 'RP' : null].filter(Boolean).join('+');
-      const ver     = g.bp?.version || g.rp?.version || '';
-      const state   = active ? '{green-fg}[ON] {/}' : '{red-fg}[OFF]{/}';
-      const szParts = [];
-      if (g.bp?.folder) szParts.push(dirSize(path.join(BP, g.bp.folder)));
-      if (g.rp?.folder) szParts.push(dirSize(path.join(RP, g.rp.folder)));
-      const sizeStr = szParts.length ? ' {gray-fg}[' + szParts.join('+') + ']{/}' : '';
-      return state + ' [' + tags + '] ' + g.name + ' v' + ver + sizeStr;
+      const ac  = (g.bp && isActive(g.bp.uuid)) || (g.rp && isActive(g.rp.uuid));
+      const tg  = [g.bp ? 'BP' : null, g.rp ? 'RP' : null].filter(Boolean).join('+');
+      const vr  = g.bp?.version || g.rp?.version || '';
+      const st  = ac ? '{green-fg}[ON] {/}' : '{red-fg}[OFF]{/}';
+      const sz  = [];
+      if (g.bp?.folder) sz.push(dirSize(path.join(BP, g.bp.folder)));
+      if (g.rp?.folder) sz.push(dirSize(path.join(RP, g.rp.folder)));
+      const szs = sz.length ? ' {gray-fg}[' + sz.join('+') + ']{/}' : '';
+      return st + ' [' + tg + '] ' + g.name + ' v' + vr + szs;
     });
   };
 
@@ -758,34 +700,25 @@ function showWorldScreen() {
   screen.append(header);
   screen.append(listBox);
   listBox.focus();
-
   updateHeader();
   renderList();
 
   listBox.key('enter', () => {
     const entry = entries[listBox.selected];
     if (!entry) return;
-    const [, group] = entry;
-    const active = (group.bp && isActive(group.bp.uuid)) || (group.rp && isActive(group.rp.uuid));
-    if (active) deactivateGroup(group); else activateGroup(group);
+    const [, grp] = entry;
+    const ac = (grp.bp && isActive(grp.bp.uuid)) || (grp.rp && isActive(grp.rp.uuid));
+    if (ac) deactivateGroup(grp); else activateGroup(grp);
     renderList();
   });
 
   listBox.key(['m', 'M'], () => {
     const entry = entries[listBox.selected];
     if (!entry) return;
-    showDetailModal(entry[1], () => {
-      listBox.focus();
-      screen.render();
-    });
+    showDetailModal(entry[1], () => { listBox.focus(); screen.render(); });
   });
 
-  screen.key(['o', 'O'], () => {
-    showNoIcon = !showNoIcon;
-    updateHeader();
-    refreshList();
-  });
-
+  screen.key(['o', 'O'], () => { showNoIcon = !showNoIcon; updateHeader(); refreshList(); });
   screen.key(['i', 'I'], () => showInstallScreen(bpPacks, rpPacks));
 
   screen.key(['e', 'E'], () => {
@@ -795,27 +728,33 @@ function showWorldScreen() {
     spawnSync(process.execPath, [SL, wp], { stdio: 'inherit' });
     process.exit(0);
   });
+
   screen.key(['q', 'Q', 'C-c'], () => process.exit(0));
 
   screen.key(['d', 'D'], () => {
     const entry = entries[listBox.selected];
     if (!entry) return;
     const [, grp] = entry;
-    const grpName = grp.name;
-    showConfirmModal('Desinstalar: ' + grpName + '?', () => {
-      showWait('Desinstalando ' + grpName + '...', () => {
-        deleteGroup(grp);
-        showWorldScreen();
-      });
+    showConfirmModal('Desinstalar: ' + grp.name + '?', () => {
+      showWait('Desinstalando ' + grp.name + '...', () => { deleteGroup(grp); showWorldScreen(); });
     }, () => { listBox.focus(); screen.render(); });
   });
 
   screen.key(['p', 'P'], () => {
-    showFilePicker('Selecciona MC_ROOT', MC_ROOT, (selected) => {
-      MC_ROOT = selected;
-      showFilePicker('Selecciona DL_DIR', DL_DIR, (sel2) => {
-        DL_DIR = sel2;
-        showWorldScreen();
+    showFilePicker('Selecciona CarpetaBP', D_BP || '/', (s1) => {
+      D_BP = s1; upsertEnv('CarpetaBP', s1);
+      showFilePicker('Selecciona CarpetaRP', D_RP || '/', (s2) => {
+        D_RP = s2; upsertEnv('CarpetaRP', s2);
+        showFilePicker('Selecciona CarpetaMundos', D_WO || '/', (s3) => {
+          D_WO = s3; upsertEnv('CarpetaMundos', s3);
+          showFilePicker('Selecciona CarpetaRecursos', D_RES || '/', (s4) => {
+            D_RES = s4; upsertEnv('CarpetaRecursos', s4);
+            showFilePicker('Selecciona CarpetaInstalados', D_INS || '/', (s5) => {
+              D_INS = s5; upsertEnv('CarpetaInstalados', s5);
+              showWorldScreen();
+            }, () => showWorldScreen());
+          }, () => showWorldScreen());
+        }, () => showWorldScreen());
       }, () => showWorldScreen());
     }, () => showWorldScreen());
   });
@@ -826,11 +765,10 @@ function showWorldScreen() {
 function showInstallScreen(bpPacks, rpPacks) {
   screen.children.slice().forEach(c => c.detach());
   screen.removeAllListeners('keypress');
-
   showWait('Escaneando archivos...', () => {
     let result;
     try { result = buildInstallPreview(bpPacks, rpPacks); }
-    catch (e) { result = { items: [], files: [] }; }
+    catch { result = { items: [], files: [] }; }
     _continueInstallScreen(result, bpPacks, rpPacks);
   });
 }
@@ -847,14 +785,14 @@ function _continueInstallScreen(result, bpPacks, rpPacks) {
   const { items: preview, files: srcFiles } = result;
 
   const lines = preview.length === 0
-    ? ['{yellow-fg}Sin archivos en ' + DL_DIR + '{/}']
+    ? ['{yellow-fg}Sin archivos en ' + D_RES + '{/}']
     : preview.map(p => {
-        const action = p.downgrade
+        const ac = p.downgrade
           ? '{red-fg}[DOWNGRADE]{/} v' + p.newVer + ' < v' + p.existing.version + ' (ignorado)'
           : p.existing
             ? '{yellow-fg}[ACTUALIZAR]{/} ' + p.existing.name + ' v' + p.existing.version + ' -> v' + p.newVer
             : '{green-fg}[NUEVO]{/} v' + p.newVer;
-        return '[' + p.type + '] ' + p.name + '  ' + action;
+        return '[' + p.type + '] ' + p.name + '  ' + ac;
       });
 
   const content = blessed.box({
@@ -871,11 +809,9 @@ function _continueInstallScreen(result, bpPacks, rpPacks) {
   if (preview.length > 0) {
     screen.key('enter', () => {
       screen.removeAllListeners('keypress');
-
       showWait('Instalando...', () => {
         let installed = [], err = null;
         try { installed = doInstall(preview, srcFiles); } catch (e) { err = e; }
-
         if (err) {
           content.setContent('{red-fg}Error: ' + err.message + '{/}');
           screen.render();
@@ -883,7 +819,6 @@ function _continueInstallScreen(result, bpPacks, rpPacks) {
           screen.key(['q', 'Q', 'C-c'], () => process.exit(0));
           return;
         }
-
         if (checkOwnership(installed)) {
           content.setContent('{green-fg}Instalacion completada.{/}');
           screen.render();
@@ -912,18 +847,13 @@ function showWorldSelect() {
   if (!fs.existsSync(WORLDS)) { console.error('No existe: ' + WORLDS); process.exit(1); }
   const worlds = fs.readdirSync(WORLDS).filter(f => fs.statSync(path.join(WORLDS, f)).isDirectory());
   if (worlds.length === 0) { console.error('Sin mundos en ' + WORLDS); process.exit(1); }
-
   showWait('Cargando mundos...', () => {
-    const worldItems = worlds.map(w => {
-      const sz = dirSize(path.join(WORLDS, w));
-      return { name: w, label: w + ' {gray-fg}(' + sz + '){/}' };
-    });
-    _continueWorldSelect(worldItems);
+    const wi = worlds.map(w => ({ name: w, label: w + ' {gray-fg}(' + dirSize(path.join(WORLDS, w)) + '){/}' }));
+    _continueWorldSelect(wi);
   });
 }
 
-function _continueWorldSelect(worldItems) {
-
+function _continueWorldSelect(wi) {
   const box = blessed.box({
     top: 0, left: 0, width: '100%', height: 3,
     content: ' MC Addon Manager — Selecciona un mundo',
@@ -931,14 +861,14 @@ function _continueWorldSelect(worldItems) {
   });
 
   const list = blessed.list({
-    top: 3, left: 'center', width: 60, height: worldItems.length + 2,
+    top: 3, left: 'center', width: 60, height: wi.length + 2,
     keys: true, vi: true, mouse: true, tags: true,
     border: { type: 'line' },
     style: { border: { fg: 'cyan' }, selected: { bg: 'blue', fg: 'white' }, item: { fg: 'white' } },
-    items: worldItems.map(w => w.label),
+    items: wi.map(w => w.label),
   });
 
-  list.on('select', (_, idx) => { worldName = worldItems[idx].name; showWorldScreen(); });
+  list.on('select', (_, idx) => { worldName = wi[idx].name; showWorldScreen(); });
   screen.key(['q', 'Q', 'C-c'], () => process.exit(0));
   screen.append(box);
   screen.append(list);
@@ -946,4 +876,4 @@ function _continueWorldSelect(worldItems) {
   screen.render();
 }
 
-runValidation(ROUTE_VARS, 0, showWorldSelect);
+runValidation(RV, 0, showWorldSelect);

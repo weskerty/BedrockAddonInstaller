@@ -4,7 +4,7 @@ TEMP_DIR=/tmp/mc_addon_install
 
 
 
-MOVE_TO_INSTALLED=false
+MOVE_TO_INSTALLED=true
 BP_DIR=
 RP_DIR=
 WORLDS_DIR=
