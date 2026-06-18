@@ -1,12 +1,18 @@
-MC_ROOT=/opt/minecraft-bedrock-server
-DL_DIR=
+# Ruta BP 
+CarpetaBP=/opt/minecraft-bedrock-server/behavior_packs
+
+# Ruta RP
+CarpetaRP=/opt/minecraft-bedrock-server/resource_packs
+
+# Ruta Mundos
+CarpetaMundos=/opt/minecraft-bedrock-server/worlds
+
+# Carpeta donde están los .mcpack/.mcaddon/.zip a instalar
+CarpetaRecursos=./resources
+
+# Carpeta donde se mueven despues de instalar
+CarpetaInstalados=./Instalados
+
+
+# Carpeta temporal, podria fallar descomprimir en Windows, no lo se no probe.
 TEMP_DIR=/tmp/mc_addon_install
-
-
-
-MOVE_TO_INSTALLED=true
-BP_DIR=
-RP_DIR=
-WORLDS_DIR=
-
-GIT_BRANCH=master
